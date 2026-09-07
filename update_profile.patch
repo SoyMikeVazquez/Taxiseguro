@@ -1,0 +1,120 @@
+--- lib/screens/profile_screen.dart
++++ lib/screens/profile_screen.dart
+@@ -1,6 +1,8 @@
++import 'dart:io';
+ import 'package:flutter/material.dart';
+ import 'package:supabase_flutter/supabase_flutter.dart';
++import 'package:image_picker/image_picker.dart';
+ 
+ class ProfileScreen extends StatefulWidget {
+   final bool showBackButton;
+@@ -20,6 +22,7 @@
+   bool _isLoading = false;
+   bool _isSaving = false;
+   String _selectedPaymentMethod = 'Efectivo';
++  String? _profileImageUrl;
+   double _userRating = 5.0;
+ 
+   // Lista simulada de métodos de pago guardados
+@@ -74,6 +77,9 @@
+           if (response['telefono'] != null && (response['telefono'] as String).isNotEmpty) {
+             _phoneController.text = response['telefono'];
+           }
++          if (response['imagen_perfil'] != null && (response['imagen_perfil'] as String).isNotEmpty) {
++            _profileImageUrl = response['imagen_perfil'];
++          }
+         });
+       }
+ 
+@@ -110,6 +116,42 @@
+     }
+   }
+ 
++  Future<void> _pickAndUploadImage() async {
++    try {
++      final ImagePicker picker = ImagePicker();
++      final XFile? image = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
++      
++      if (image == null) return;
++      
++      setState(() {
++        _isLoading = true;
++      });
++      
++      final File file = File(image.path);
++      final user = _supabase.auth.currentUser;
++      if (user == null) return;
++      
++      final fileName = 'perfil_${user.id}_${DateTime.now().millisecondsSinceEpoch}.jpg';
++      final storagePath = 'usuarios/${user.id}/$fileName';
++      
++      await _supabase.storage.from('general').upload(
++        storagePath,
++        file,
++        fileOptions: const FileOptions(cacheControl: '3600', upsert: true),
++      );
++      
++      final String publicUrl = _supabase.storage.from('general').getPublicUrl(storagePath);
++      
++      await _supabase.from('users').update({'imagen_perfil': publicUrl}).eq('user_id', user.id);
++      
++      setState(() {
++        _profileImageUrl = publicUrl;
++      });
++    } catch (e) {
++      print('Error al subir imagen: $e');
++    } finally {
++      setState(() {
++        _isLoading = false;
++      });
++    }
++  }
++
+   Future<void> _saveProfile() async {
+     if (!_formKey.currentState!.validate()) return;
+ 
+@@ -291,14 +333,26 @@
+                                 padding: const EdgeInsets.all(4),
+                                 decoration: BoxDecoration(
+                                   shape: BoxShape.circle,
+                                   border: Border.all(color: const Color(0xFFC7FF2E), width: 3),
+                                 ),
+                                 child: CircleAvatar(
+                                   radius: 46,
+                                   backgroundColor: Colors.black,
+-                                  child: CircleAvatar(
+-                                    radius: 44,
+-                                    backgroundColor: Colors.grey[200],
+-                                    child: const Icon(Icons.person, size: 50, color: Colors.black54),
+-                                  ),
++                                  child: _profileImageUrl != null
++                                      ? ClipOval(
++                                          child: Image.network(
++                                            _profileImageUrl!,
++                                            width: 88,
++                                            height: 88,
++                                            fit: BoxFit.cover,
++                                          ),
++                                        )
++                                      : CircleAvatar(
++                                          radius: 44,
++                                          backgroundColor: Colors.grey[200],
++                                          child: const Icon(Icons.person, size: 50, color: Colors.black54),
++                                        ),
+                                 ),
+                               ),
+                               Positioned(
+@@ -310,12 +364,15 @@
+                                   decoration: const BoxDecoration(
+                                     color: Colors.black,
+                                     shape: BoxShape.circle,
+                                   ),
+-                                  child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
++                                  child: GestureDetector(
++                                    onTap: _pickAndUploadImage,
++                                    child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
++                                  ),
+                                 ),
+                               ),
+                             ],
+                           ),
