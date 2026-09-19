@@ -8,6 +8,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../models/trip.dart';
 import '../services/trip_service.dart';
 import '../services/location_service.dart';
+import '../services/background_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'active_trip_screen.dart';
 import '../env/env.dart';
 
@@ -123,6 +125,21 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   }
 
   Future<void> _toggleDriverStatus(bool value) async {
+    if (value) {
+      final status = await Permission.notification.request();
+      if (!status.isGranted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Se requieren permisos de notificación para funcionar en segundo plano.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     final previousStatus = _isDriverActive;
     setState(() => _isDriverActive = value);
     try {
@@ -130,6 +147,12 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
           .from('conductores')
           .update({'estatus': value ? 'activo' : 'inactivo'})
           .eq('user_id', _driverId!);
+          
+      if (value) {
+        BackgroundServiceHelper.startService();
+      } else {
+        BackgroundServiceHelper.stopService();
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _isDriverActive = previousStatus);
@@ -230,6 +253,8 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
             paymentMethod: trip.paymentMethod,
           );
           
+          BackgroundServiceHelper.startDriverTrip('Nuevo Viaje Aceptado', 'Dirígete al punto de recogida');
+
           Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => ActiveTripScreen(trip: acceptedTrip),
@@ -435,46 +460,21 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
             ).animate().fade(duration: 500.ms).slideY(begin: -0.5, end: 0, duration: 500.ms, curve: Curves.easeOutQuad),
           ),
 
-          // 3. Botón flotante para simular viaje (solo para pruebas)
+          // 3. Botón flotante para refrescar estado
           Positioned(
             top: MediaQuery.of(context).padding.top + 90,
             right: 16,
-            child: Column(
-              children: [
-                FloatingActionButton.small(
-                  heroTag: 'simulate_trip',
-                  backgroundColor: Colors.black,
-                  onPressed: () {
-                    final trip = Trip(
-                      id: 'simulated_trip_123',
-                      userId: _driverId ?? 'simulated_user',
-                      driverId: _driverId ?? 'simulated_driver',
-                      originAddress: 'Av. Revolución 1234, MTY',
-                      destinationAddress: 'Parque Fundidora, MTY',
-                      fare: 150.00,
-                      status: 'accepted',
-                      paymentMethod: 'efectivo',
-                    );
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => ActiveTripScreen(trip: trip)),
-                    ).then((_) => _loadDriverState());
-                  },
-                  child: const Icon(Icons.add_location_alt, color: Colors.white),
-                ),
-                const SizedBox(height: 12),
-                FloatingActionButton.small(
-                  heroTag: 'reload_stream',
-                  backgroundColor: Colors.white,
-                  onPressed: () {
-                    // Trigger a rebuild of the stream builder
-                    setState(() {});
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Buscando viajes recientes...'), duration: Duration(seconds: 1)),
-                    );
-                  },
-                  child: const Icon(Icons.refresh, color: Colors.black),
-                ),
-              ],
+            child: FloatingActionButton.small(
+              heroTag: 'reload_stream',
+              backgroundColor: Colors.white,
+              onPressed: () {
+                // Trigger a rebuild of the stream builder
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Buscando viajes recientes...'), duration: Duration(seconds: 1)),
+                );
+              },
+              child: const Icon(Icons.refresh, color: Colors.black),
             ),
           ),
 

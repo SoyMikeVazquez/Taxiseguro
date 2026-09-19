@@ -18,6 +18,7 @@ class Trip {
   final String? paymentMethod; // 'efectivo' o 'tarjeta'
   final String? nameDriver;
   final String? photoDriver;
+  final double? totalFinal; // Ganancia del conductor (80%)
 
   Trip({
     this.id,
@@ -39,6 +40,7 @@ class Trip {
     this.paymentMethod,
     this.nameDriver,
     this.photoDriver,
+    this.totalFinal,
   });
 
   factory Trip.fromJson(Map<String, dynamic> json) {
@@ -62,6 +64,7 @@ class Trip {
       paymentMethod: json['payment_method']?.toString(),
       nameDriver: json['name_driver']?.toString(),
       photoDriver: json['photo_driver']?.toString(),
+      totalFinal: json['total_final'] != null ? (json['total_final'] as num).toDouble() : null,
     );
   }
 
@@ -86,6 +89,7 @@ class Trip {
       if (paymentMethod != null) 'payment_method': paymentMethod,
       if (nameDriver != null) 'name_driver': nameDriver,
       if (photoDriver != null) 'photo_driver': photoDriver,
+      if (totalFinal != null) 'total_final': totalFinal,
     };
   }
 }

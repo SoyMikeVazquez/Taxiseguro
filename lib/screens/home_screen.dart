@@ -29,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   
   // Destination and Route State
   String? _selectedOrigin;
+  LatLng? _selectedOriginLatLng;
   String? _selectedDestination;
   LatLng? _selectedDestinationLatLng;
   double? _routeDistance;
@@ -40,6 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Pin Picker State (Uber / DiDi pin selection mode)
   bool _isPinPickerMode = false;
+  bool _isPinPickerForOrigin = false;
   String _pinnedAddress = '';
   Timer? _geocodeDebounceTimer;
 
@@ -69,6 +71,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onRouteSelected(String origin, LatLng? originLatLng, String destination, LatLng? destinationLatLng) {
     setState(() {
       _selectedOrigin = origin;
+      _selectedOriginLatLng = originLatLng;
       _selectedDestination = destination;
       if (destinationLatLng != null) {
         _selectedDestinationLatLng = destinationLatLng;
@@ -81,14 +84,21 @@ class _HomeScreenState extends State<HomeScreen> {
     final chosenAddress = _pinnedAddress.isNotEmpty ? _pinnedAddress : 'Ubicación seleccionada en mapa';
     setState(() {
       _isPinPickerMode = false;
-      _selectedDestinationLatLng = _lastPinCenter;
-      _onRouteSelected(_selectedOrigin ?? 'Ubicación actual', null, chosenAddress, _lastPinCenter);
+      if (_isPinPickerForOrigin) {
+        _selectedOrigin = chosenAddress;
+        _selectedOriginLatLng = _lastPinCenter;
+        _onRouteSelected(chosenAddress, _lastPinCenter, _selectedDestination ?? '', _selectedDestinationLatLng);
+      } else {
+        _selectedDestinationLatLng = _lastPinCenter;
+        _onRouteSelected(_selectedOrigin ?? 'Ubicación actual', _selectedOriginLatLng, chosenAddress, _lastPinCenter);
+      }
     });
   }
 
   void _onCancelRide() {
     setState(() {
       _selectedOrigin = null;
+      _selectedOriginLatLng = null;
       _selectedDestination = null;
       _selectedDestinationLatLng = null;
       _routeDistance = null;
@@ -275,14 +285,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             origin: _selectedOrigin ?? 'Ubicación actual',
                             destination: _selectedDestination!,
                             onCancel: _onCancelRide,
-                            onSimulateDriverAssigned: () {
-                              setState(() {
-                                _isDriverAssigned = true;
-                              });
-                            },
                           )
                     : _isPinPickerMode
                         ? PinPickerSheet(
+                            isOrigin: _isPinPickerForOrigin,
                             currentAddress: _pinnedAddress,
                             onConfirm: _onPinConfirmed,
                           )
@@ -294,6 +300,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               onOpenPinPicker: (isOrigin) {
                                 setState(() {
                                   _isPinPickerMode = true;
+                                  _isPinPickerForOrigin = isOrigin;
                                 });
                               },
                               isSearching: _isSearching,

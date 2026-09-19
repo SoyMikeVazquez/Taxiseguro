@@ -4,10 +4,18 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/home_screen.dart';
 import 'screens/auth_screen.dart';
 import 'screens/splash_router_screen.dart';
+import 'screens/update_password_screen.dart';
 import 'theme/app_theme.dart';
+import 'services/background_service.dart';
+
+import 'dart:io';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  if (Platform.isAndroid || Platform.isIOS) {
+    await initializeBackgroundService();
+  }
   
   // Initialize Supabase using database credentials
   await Supabase.initialize(
@@ -41,6 +49,12 @@ class TaxiSeguroApp extends StatelessWidget {
           }
 
           final session = snapshot.data?.session ?? Supabase.instance.client.auth.currentSession;
+          final event = snapshot.data?.event;
+
+          if (event == AuthChangeEvent.passwordRecovery) {
+            return const UpdatePasswordScreen();
+          }
+
           if (session != null) {
             return const SplashRouterScreen();
           } else {

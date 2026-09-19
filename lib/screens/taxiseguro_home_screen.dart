@@ -19,6 +19,7 @@ import '../services/mapbox_service.dart';
 import '../services/pricing_service.dart';
 import '../services/location_service.dart';
 import '../theme/app_theme.dart';
+import '../services/background_service.dart';
 import 'auth_screen.dart';
 
 class TaxiseguroHomeScreen extends StatefulWidget {
@@ -76,15 +77,22 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     if (user == null) return;
 
     try {
-      // Fetch completed trips count
       final tripsResponse = await Supabase.instance.client
           .from('trips')
           .select('id')
-          .eq('user_id', user.id)
-          .eq('status', 'completed');
+          .eq('user_id', user.id);
       
       final tripsList = tripsResponse as List<dynamic>;
-      
+      if (mounted) {
+        setState(() {
+          _completedTripsCount = tripsList.length;
+        });
+      }
+    } catch (e) {
+      print('Error fetching trips stats: $e');
+    }
+
+    try {
       // Fetch user rating
       final ratingsResponse = await Supabase.instance.client
           .from('ratings')
@@ -103,12 +111,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
       if (mounted) {
         setState(() {
-          _completedTripsCount = tripsList.length;
           _userRating = avgRating;
         });
       }
     } catch (e) {
-      print('Error fetching user stats: $e');
+      print('Error fetching ratings stats: $e');
     }
   }
 
@@ -210,20 +217,43 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       if (mounted) {
         setState(() {
           _currentTripData = trip;
-          if (trip.status == 'accepted' || trip.status == 'arrived' || trip.status == 'in_progress') {
+          if (trip.status == 'accepted') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
+            BackgroundServiceHelper.updateTripStatus('Viaje Aceptado', 'Conductor en camino');
+          } else if (trip.status == 'arrived') {
+            _isSearchingDriver = false;
+            _isDriverAssigned = true;
+            BackgroundServiceHelper.updateTripStatus('Conductor Llegó', 'Tu conductor está afuera');
+          } else if (trip.status == 'in_progress') {
+            _isSearchingDriver = false;
+            _isDriverAssigned = true;
+            BackgroundServiceHelper.updateTripStatus('Viaje Activo', 'En camino al destino');
           } else if (trip.status == 'completed') {
             _isSearchingDriver = false;
             _isDriverAssigned = false;
             _isTripCompleted = true;
+            BackgroundServiceHelper.stopPassengerTrip();
           } else if (trip.status == 'cancelled') {
+            if (_currentTripId != null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('El viaje ha sido cancelado.', style: TextStyle(color: Colors.white)),
+                  backgroundColor: Colors.red,
+                  duration: Duration(seconds: 4),
+                ),
+              );
+            }
             _isSearchingDriver = false;
             _isDriverAssigned = false;
             _currentTripId = null;
             _currentTripData = null;
             _selectedDestination = null;
             _showActiveTripDetails = false;
+            BackgroundServiceHelper.stopPassengerTrip();
+            BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'Tu viaje ha sido cancelado.');
+          } else if (trip.status == 'pending') {
+            BackgroundServiceHelper.updateTripStatus('TaxiSeguro', 'Buscando conductor...');
           }
         });
       }
@@ -246,13 +276,13 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
   void _onRouteSelected(String origin, LatLng? originLatLng, String destination, LatLng? destinationLatLng) {
     setState(() {
-      _selectedOrigin = origin;
+      _selectedOrigin = origin.trim().isEmpty ? 'Ubicación actual' : origin;
       if (originLatLng != null) {
         _selectedOriginLatLng = originLatLng;
       } else if (origin.toLowerCase().contains('ubicación actual')) {
         _selectedOriginLatLng = null;
       }
-      _selectedDestination = destination;
+      _selectedDestination = destination.trim().isEmpty ? 'Ubicación en el mapa' : destination;
       if (destinationLatLng != null) {
         _selectedDestinationLatLng = destinationLatLng;
       }
@@ -261,7 +291,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   }
 
   void _onPinConfirmed() {
-    final chosenAddress = _pinnedAddress.isNotEmpty ? _pinnedAddress : 'Ubicación seleccionada en mapa';
+    final chosenAddress = _pinnedAddress.trim().isNotEmpty ? _pinnedAddress : 'Ubicación seleccionada en mapa';
     setState(() {
       _isPinPickerMode = false;
       if (_isPinPickerForOrigin) {
@@ -278,6 +308,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   Future<void> _onCancelRide() async {
     if (_currentTripId != null) {
       await _tripService.cancelTrip(_currentTripId!);
+      BackgroundServiceHelper.stopPassengerTrip();
     }
     
     setState(() {
@@ -342,6 +373,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
         _isSearchingDriver = true;
         _showActiveTripDetails = true;
       });
+      BackgroundServiceHelper.startPassengerTrip('TaxiSeguro', 'Buscando conductor...');
       _listenToTrip(trip.id!);
     } else {
       if (mounted) {
@@ -839,12 +871,10 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                           origin: _selectedOrigin ?? 'Ubicación actual',
                           destination: _selectedDestination!,
                           onCancel: _onCancelRide,
-                          onSimulateDriverAssigned: () {
-                            setState(() => _isDriverAssigned = true);
-                          },
                         )
                   : _isPinPickerMode
                       ? PinPickerSheet(
+                          isOrigin: _isPinPickerForOrigin,
                           currentAddress: _pinnedAddress,
                           onConfirm: _onPinConfirmed,
                         )

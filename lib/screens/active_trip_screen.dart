@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -7,7 +8,9 @@ import 'dart:convert';
 import '../models/trip.dart';
 import '../services/trip_service.dart';
 import '../services/location_service.dart';
+import '../services/background_service.dart';
 import '../env/env.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 class ActiveTripScreen extends StatefulWidget {
   final Trip trip;
 
@@ -16,7 +19,6 @@ class ActiveTripScreen extends StatefulWidget {
   @override
   State<ActiveTripScreen> createState() => _ActiveTripScreenState();
 }
-
 class _ActiveTripScreenState extends State<ActiveTripScreen> {
   final TripService _tripService = TripService();
   late Trip _currentTrip;
@@ -24,12 +26,60 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   List<LatLng> _routePoints = [];
   LatLng? _driverLocation;
   final MapController _mapController = MapController();
+  StreamSubscription<Trip?>? _tripSubscription;
 
   @override
   void initState() {
     super.initState();
     _currentTrip = widget.trip;
     _fetchRoute();
+    _listenToTripUpdates();
+  }
+
+  void _listenToTripUpdates() {
+    if (_currentTrip.id == null || _currentTrip.id == 'simulated_trip_123') return;
+    
+    _tripSubscription = _tripService.streamTrip(_currentTrip.id!).listen((trip) {
+      if (trip != null && mounted) {
+        if (trip.status == 'cancelled' && _currentTrip.status != 'cancelled') {
+          // El pasajero canceló el viaje
+          BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'El pasajero ha cancelado el viaje.');
+          BackgroundServiceHelper.updateDriverTripStatus('Viaje Cancelado', 'El pasajero ha cancelado el viaje');
+          _showTripCancelledDialog();
+        } else {
+          setState(() {
+            _currentTrip = trip;
+          });
+        }
+      }
+    });
+  }
+
+  void _showTripCancelledDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Viaje Cancelado', style: TextStyle(color: Colors.red)),
+        content: const Text('El pasajero ha cancelado el viaje. Serás redirigido al inicio.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              BackgroundServiceHelper.stopDriverTrip();
+              Navigator.of(context).pop(); // Close dialog
+              Navigator.of(context).pop(); // Return to map screen
+            },
+            child: const Text('Entendido', style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tripSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchRoute() async {
@@ -109,6 +159,14 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     }
     
     if (success) {
+      if (newStatus == 'arrived') {
+        BackgroundServiceHelper.updateDriverTripStatus('Has llegado', 'Esperando al pasajero');
+      } else if (newStatus == 'in_progress') {
+        BackgroundServiceHelper.updateDriverTripStatus('Viaje en curso', 'Dirigiéndote al destino');
+      } else if (newStatus == 'completed') {
+        BackgroundServiceHelper.stopDriverTrip();
+      }
+
       setState(() {
         _currentTrip = Trip(
           id: _currentTrip.id,
@@ -198,13 +256,40 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
+  Future<Map<String, String?>> _getDriverInfo() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return {'name': null, 'photo': null};
+    try {
+      final data = await Supabase.instance.client
+          .from('conductores')
+          .select('nombre, imagen_perfil')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      if (data != null) {
+        return {
+          'name': data['nombre'] as String?,
+          'photo': data['imagen_perfil'] as String?,
+        };
+      }
+    } catch (e) {
+      print('Error fetching driver info: $e');
+    }
+    return {'name': null, 'photo': null};
+  }
+
   Future<void> _cancelTrip(String reason) async {
     if (_currentTrip.id == null) return;
     setState(() => _isLoading = true);
     
     bool success = true;
     if (_currentTrip.id != 'simulated_trip_123') {
-      success = await _tripService.cancelTrip(_currentTrip.id!);
+      final driverInfo = await _getDriverInfo();
+      success = await _tripService.cancelTrip(
+        _currentTrip.id!,
+        cancelReason: reason,
+        nameDriver: driverInfo['name'],
+        photoDriver: driverInfo['photo'],
+      );
     }
     
     setState(() => _isLoading = false);
@@ -432,7 +517,13 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     setState(() => _isLoading = true);
     bool success = true;
     if (_currentTrip.id != 'simulated_trip_123') {
-      success = await _tripService.completeTrip(_currentTrip.id!, fare);
+      final driverInfo = await _getDriverInfo();
+      success = await _tripService.completeTrip(
+        _currentTrip.id!,
+        fare,
+        nameDriver: driverInfo['name'],
+        photoDriver: driverInfo['photo'],
+      );
     }
     
     if (success) {
@@ -530,7 +621,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 initialCenter: LatLng(lat1, lng1),
                 initialZoom: 15.0,
                 maxZoom: 18.0,
-                minZoom: 4.0,
+                minZoom: 2.0,
               ),
               children: [
                 TileLayer(

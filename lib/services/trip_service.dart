@@ -183,12 +183,17 @@ class TripService {
   }
 
   /// Conductor completa un viaje y se registra el cobro
-  Future<bool> completeTrip(String tripId, double fare) async {
+  Future<bool> completeTrip(String tripId, double fare, {String? nameDriver, String? photoDriver}) async {
     try {
+      final double gananciaConductor = fare * 0.80; // 80% del total
+
       await _client.from('trips').update({
         'status': 'completed',
         'fare': fare,
+        'total_final': gananciaConductor, // Guarda directamente el ingreso del conductor
         'completed_at': DateTime.now().toIso8601String(),
+        if (nameDriver != null) 'name_driver': nameDriver,
+        if (photoDriver != null) 'photo_driver': photoDriver,
       }).eq('id', tripId);
       return true;
     } catch (e) {
@@ -198,10 +203,13 @@ class TripService {
   }
 
   /// Cancelar un viaje
-  Future<bool> cancelTrip(String tripId) async {
+  Future<bool> cancelTrip(String tripId, {String? cancelReason, String? nameDriver, String? photoDriver}) async {
     try {
       await _client.from('trips').update({
         'status': 'cancelled',
+        if (cancelReason != null) 'cancel_reason': cancelReason,
+        if (nameDriver != null) 'name_driver': nameDriver,
+        if (photoDriver != null) 'photo_driver': photoDriver,
       }).eq('id', tripId);
       return true;
     } catch (e) {

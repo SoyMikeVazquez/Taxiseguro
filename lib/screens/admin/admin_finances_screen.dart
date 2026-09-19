@@ -21,6 +21,14 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
   double _comisionApp = 0.0;
   double _gananciaConductores = 0.0;
   double _retenciones = 0.0;
+  
+  // Desglose de Comisión
+  double _comisionBancaria = 0.0;
+  double _comisionTaxiSeguro = 0.0;
+  double _referidoNivel1 = 0.0;
+  double _referidoNivel2 = 0.0;
+  double _accionistasSapi = 0.0;
+
   int _totalViajes = 0;
   double _ticketPromedio = 0.0;
   
@@ -30,6 +38,7 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
   
   final SupabaseClient _supabase = Supabase.instance.client;
   List<Trip> _trips = [];
+  List<Map<String, dynamic>> _driverStatsList = [];
 
   @override
   void initState() {
@@ -80,8 +89,11 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
           .gte('completed_at', startDate.toIso8601String())
           .lte('completed_at', endDate.toIso8601String());
 
+      final driversResponse = await _supabase.from('conductores').select();
+      final List<dynamic> driversData = (driversResponse as List<dynamic>?) ?? [];
+
       _trips = (response as List).map((t) => Trip.fromJson(t)).toList();
-      _calculateFinances(startDate, endDate);
+      _calculateFinances(startDate, endDate, driversData);
     } catch (e) {
       print('Error al cargar finanzas: $e');
     } finally {
@@ -93,18 +105,64 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
     }
   }
 
-  void _calculateFinances(DateTime startDate, DateTime endDate) {
+  void _calculateFinances(DateTime startDate, DateTime endDate, List<dynamic> driversData) {
     double totalFare = 0.0;
+    Map<String, double> driverFares = {}; // Bruto por conductor
+    Map<String, double> driverEarned = {}; // Ganancia neta (total_final)
+    Map<String, int> driverTrips = {};
+
     for (var trip in _trips) {
-      totalFare += (trip.fare ?? 0.0);
+      double fare = trip.fare ?? 0.0;
+      double earned = trip.totalFinal ?? (fare * 0.80);
+      
+      totalFare += fare;
+      
+      if (trip.driverId != null) {
+        driverFares[trip.driverId!] = (driverFares[trip.driverId!] ?? 0.0) + fare;
+        driverEarned[trip.driverId!] = (driverEarned[trip.driverId!] ?? 0.0) + earned;
+        driverTrips[trip.driverId!] = (driverTrips[trip.driverId!] ?? 0) + 1;
+      }
     }
 
     _ingresosBrutos = totalFare;
-    _comisionApp = totalFare * 0.15;
-    _gananciaConductores = totalFare * 0.85;
+    _comisionApp = totalFare * 0.20;
+    _gananciaConductores = driverEarned.values.fold(0.0, (sum, val) => sum + val);
+    
+    // Desglose del 20%
+    _comisionBancaria = _comisionApp * 0.20;
+    _comisionTaxiSeguro = _comisionApp * 0.30;
+    _referidoNivel1 = _comisionApp * 0.075;
+    _referidoNivel2 = _comisionApp * 0.025;
+    _accionistasSapi = _comisionApp * 0.40;
+    
     _retenciones = totalFare * 0.08; // Estimado 8%
     _totalViajes = _trips.length;
     _ticketPromedio = _totalViajes > 0 ? totalFare / _totalViajes : 0.0;
+
+    _driverStatsList.clear();
+    driverFares.forEach((driverId, fare) {
+      final driverInfo = driversData.firstWhere(
+        (d) => d['user_id'] == driverId, 
+        orElse: () => <String, dynamic>{}
+      );
+      String name = driverInfo['Nombre'] ?? 'Conductor Desconocido';
+      if (driverInfo['Apellidos'] != null) {
+        name += ' ${driverInfo['Apellidos']}';
+      }
+
+      double earned = driverEarned[driverId] ?? (fare * 0.80);
+
+      _driverStatsList.add({
+        'name': name,
+        'totalFare': fare,
+        'trips': driverTrips[driverId] ?? 0,
+        'driverEarned': earned,
+        'appCommission': fare - earned, // Lo que resta es para la plataforma
+      });
+    });
+    
+    // Sort by total fare descending
+    _driverStatsList.sort((a, b) => (b['totalFare'] as double).compareTo(a['totalFare'] as double));
 
     _buildChartData(startDate, endDate);
   }
@@ -292,7 +350,7 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: _buildSummaryCard(
-                  'Comisión App (15%)',
+                  'Comisión App (20%)',
                   '${_formatCurrency(_comisionApp)} MXN',
                   'Bruto',
                   const Color(0xFFC7FF2E),
@@ -441,15 +499,107 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
                   style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
                 ),
                 const SizedBox(height: 16),
-                _buildFinanceRow('Ganancia Conductores (85%)', _formatCurrency(_gananciaConductores), Colors.black87),
-                _buildFinanceRow('Comisión Taxiseguro (15%)', _formatCurrency(_comisionApp), Colors.green),
-                _buildFinanceRow('Retenciones fiscales (estimado 8%)', _formatCurrency(_retenciones), Colors.orange),
+                _buildFinanceRow('Ganancia Conductores (80%)', _formatCurrency(_gananciaConductores), Colors.black87),
+                _buildFinanceRow('Comisión Plataforma (20%)', _formatCurrency(_comisionApp), Colors.black87, isBold: true),
+                const Divider(height: 16),
+                const Text('Detalle de Comisión Plataforma', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                _buildFinanceRow('• Bancaria (20% de comisión)', _formatCurrency(_comisionBancaria), Colors.red),
+                _buildFinanceRow('• Taxi Seguro (30% de comisión)', _formatCurrency(_comisionTaxiSeguro), Colors.green),
+                _buildFinanceRow('• Referido Nivel 1 (7.5% de comisión)', _formatCurrency(_referidoNivel1), Colors.amber),
+                _buildFinanceRow('• Referido Nivel 2 (2.5% de comisión)', _formatCurrency(_referidoNivel2), Colors.orange),
+                _buildFinanceRow('• Accionistas SAPI (40% de comisión)', _formatCurrency(_accionistasSapi), Colors.purple),
+                const Divider(height: 24),
+                _buildFinanceRow('Retenciones fiscales (estimado 8%)', _formatCurrency(_retenciones), Colors.grey),
                 const Divider(height: 24),
                 _buildFinanceRow('Ticket Promedio por Viaje', _formatCurrency(_ticketPromedio), Colors.black, isBold: true),
                 _buildFinanceRow('Total Viajes en el Periodo', '$_totalViajes viajes', Colors.black, isBold: true),
               ],
             ),
           ).animate().fade(duration: 400.ms, delay: 150.ms).slideY(begin: 0.1, end: 0),
+          
+          const SizedBox(height: 20),
+
+          // Tabla de Conductores y sus Montos
+          if (_driverStatsList.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 15, offset: const Offset(0, 6))],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Desempeño por Conductor',
+                    style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 16),
+                  ..._driverStatsList.map((stat) {
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey.shade200),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  stat['name'],
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  '${stat['trips']} viajes',
+                                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('Total Generado', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                  Text(_formatCurrency(stat['totalFare']), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                ],
+                              ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  const Text('Ganancia (80%)', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                  Text(_formatCurrency(stat['driverEarned']), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ).animate().fade(duration: 400.ms, delay: 200.ms).slideY(begin: 0.1, end: 0),
         ],
       ),
     );

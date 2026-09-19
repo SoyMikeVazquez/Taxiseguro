@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../services/admin_service.dart';
 import 'admin_driver_detail_screen.dart';
 import 'admin_driver_registration_screen.dart';
-import '../../env/env.dart';
+
 class AdminDriversMonitorScreen extends StatefulWidget {
   const AdminDriversMonitorScreen({super.key});
 
@@ -15,13 +13,10 @@ class AdminDriversMonitorScreen extends StatefulWidget {
 
 class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
   final AdminService _adminService = AdminService();
-  final MapController _mapController = MapController();
 
   bool _isLoading = true;
   List<Map<String, dynamic>> _drivers = [];
   String _selectedFilter = 'todos'; // 'todos', 'activos', 'pendientes', 'inactivos'
-
-  static const String _mapboxToken = Env.mapboxApiKey;
 
   @override
   void initState() {
@@ -87,74 +82,7 @@ class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.black))
           : Column(
               children: [
-                // 1. Mapa de Flota en Vivo
-                SizedBox(
-                  height: 250,
-                  child: Stack(
-                    children: [
-                      FlutterMap(
-                        mapController: _mapController,
-                        options: const MapOptions(
-                          initialCenter: LatLng(19.4326, -99.1332), // CDMX centro
-                          initialZoom: 12.0,
-                        ),
-                        children: [
-                          TileLayer(
-                            urlTemplate: 'https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}@2x?access_token=$_mapboxToken',
-                            userAgentPackageName: 'com.taxiseguro.app',
-                          ),
-                          MarkerLayer(
-                            markers: filtered.map((driver) {
-                              final double lat = (driver['latitud'] as num?)?.toDouble() ?? (19.4200 + (driver.hashCode % 100) * 0.0003);
-                              final double lng = (driver['longitud'] as num?)?.toDouble() ?? (-99.1500 + (driver.hashCode % 100) * 0.0003);
-                              final bool isActive = (driver['estatus'] ?? '').toString().toLowerCase() == 'activo';
-
-                              return Marker(
-                                point: LatLng(lat, lng),
-                                width: 42,
-                                height: 42,
-                                child: GestureDetector(
-                                  onTap: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(builder: (_) => AdminDriverDetailScreen(driver: driver)),
-                                    );
-                                  },
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: isActive ? const Color(0xFFC7FF2E) : Colors.amber,
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.black, width: 2.5),
-                                      boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
-                                    ),
-                                    child: const Icon(Icons.local_taxi, size: 22, color: Colors.black),
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ],
-                      ),
-                      Positioned(
-                        top: 12,
-                        right: 12,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.black87,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            '${filtered.length} en flota',
-                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // 2. Filtros de Conductores
+                // 1. Filtros de Conductores
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

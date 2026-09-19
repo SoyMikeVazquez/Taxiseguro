@@ -203,7 +203,10 @@ class _AuthScreenState extends State<AuthScreen> {
 
     try {
       setState(() => _isLoading = true);
-      await Supabase.instance.client.auth.resetPasswordForEmail(email);
+      await Supabase.instance.client.auth.resetPasswordForEmail(
+        email,
+        redirectTo: 'taxiseguro://reset-callback/',
+      );
       if (mounted) {
         showDialog(
           context: context,

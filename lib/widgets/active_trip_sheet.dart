@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/trip.dart';
+import '../services/driver_profile_service.dart';
+import '../services/trip_service.dart';
 
-class ActiveTripSheet extends StatelessWidget {
+class ActiveTripSheet extends StatefulWidget {
   final String driverName;
   final String vehicleInfo;
   final String plateNumber;
@@ -25,9 +28,92 @@ class ActiveTripSheet extends StatelessWidget {
     required this.onFinishTrip,
   });
 
+  @override
+  State<ActiveTripSheet> createState() => _ActiveTripSheetState();
+}
+
+class _ActiveTripSheetState extends State<ActiveTripSheet> {
+  String _driverName = '';
+  String _vehicleInfo = '';
+  String _plateNumber = '';
+  String _rating = '5.0';
+  bool _isLoadingDriver = true;
+  Timer? _cancelTimer;
+  bool _canCancelWithoutPenalty = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _driverName = widget.driverName;
+    _vehicleInfo = widget.vehicleInfo;
+    _plateNumber = widget.plateNumber;
+    _rating = widget.rating;
+    _fetchDriverInfo();
+    _startCancelTimer();
+  }
+
+  @override
+  void dispose() {
+    _cancelTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startCancelTimer() {
+    _checkCancelStatus();
+    _cancelTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _checkCancelStatus();
+    });
+  }
+
+  void _checkCancelStatus() {
+    if (widget.trip?.createdAt != null) {
+      final now = DateTime.now();
+      final difference = now.difference(widget.trip!.createdAt!);
+      if (difference.inMinutes >= 5) {
+        if (!_canCancelWithoutPenalty && mounted) {
+          setState(() {
+            _canCancelWithoutPenalty = true;
+          });
+        }
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(ActiveTripSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.trip?.driverId != oldWidget.trip?.driverId) {
+      _fetchDriverInfo();
+    }
+  }
+
+  Future<void> _fetchDriverInfo() async {
+    if (widget.trip?.driverId == null) {
+      if (mounted) setState(() => _isLoadingDriver = false);
+      return;
+    }
+    
+    final service = DriverProfileService();
+    final profile = await service.getDriverProfile(widget.trip!.driverId!);
+    
+    if (profile != null && mounted) {
+      setState(() {
+        _driverName = profile['nombre_completo'] ?? profile['nombre'] ?? widget.driverName;
+        final auto = profile['modelo_auto'] ?? 'Auto';
+        final color = profile['color_auto'] ?? '';
+        _vehicleInfo = color.isNotEmpty ? '$auto • $color' : auto;
+        _plateNumber = profile['placas'] ?? widget.plateNumber;
+        _rating = profile['calificacion']?.toString() ?? '5.0';
+        _isLoadingDriver = false;
+      });
+    } else if (mounted) {
+      setState(() => _isLoadingDriver = false);
+    }
+  }
+
   String _getStatusText() {
-    if (trip == null) return 'Conductor asignado';
-    switch (trip!.status) {
+    if (widget.trip == null) return 'Conductor asignado';
+    switch (widget.trip!.status) {
       case 'accepted':
         return 'Conductor en camino';
       case 'arrived':
@@ -40,8 +126,8 @@ class ActiveTripSheet extends StatelessWidget {
   }
 
   Color _getStatusColor() {
-    if (trip == null) return Colors.black;
-    switch (trip!.status) {
+    if (widget.trip == null) return Colors.black;
+    switch (widget.trip!.status) {
       case 'accepted':
         return Colors.black; // Normal
       case 'arrived':
@@ -168,7 +254,7 @@ class ActiveTripSheet extends StatelessWidget {
                   border: Border.all(color: Colors.grey[300]!),
                 ),
                 child: Text(
-                  '🚗 Sigue mi viaje en vivo en Taxiseguro con $driverName ($vehicleInfo, Placas $plateNumber).\n\n📍 Destino: $destination\n🔗 https://taxiseguro.app/track/trip_demo_123',
+                  '🚗 Sigue mi viaje en vivo en Taxiseguro con $_driverName ($_vehicleInfo, Placas $_plateNumber).\n\n📍 Destino: ${widget.destination}\n🔗 https://taxiseguro.app/track/trip_demo_123',
                   style: const TextStyle(fontSize: 13, height: 1.4),
                 ),
               ),
@@ -254,7 +340,7 @@ class ActiveTripSheet extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      etaText,
+                      widget.etaText,
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
@@ -270,7 +356,7 @@ class ActiveTripSheet extends StatelessWidget {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    plateNumber,
+                    _isLoadingDriver ? '...' : _plateNumber,
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -303,7 +389,7 @@ class ActiveTripSheet extends StatelessWidget {
                       Row(
                         children: [
                           Text(
-                            driverName,
+                            _isLoadingDriver ? 'Cargando...' : _driverName,
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
@@ -313,7 +399,7 @@ class ActiveTripSheet extends StatelessWidget {
                           const Icon(Icons.star, size: 16, color: Colors.amber),
                           const SizedBox(width: 2),
                           Text(
-                            rating,
+                            _isLoadingDriver ? '-' : _rating,
                             style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.bold,
@@ -323,7 +409,7 @@ class ActiveTripSheet extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        vehicleInfo,
+                        _isLoadingDriver ? 'Buscando información...' : _vehicleInfo,
                         style: TextStyle(
                           fontSize: 13,
                           color: Colors.grey[600],
@@ -367,35 +453,62 @@ class ActiveTripSheet extends StatelessWidget {
               ],
             ),
 
-            const SizedBox(height: 20),
-
-            // Finish / Complete Trip simulation button
-            SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: ElevatedButton(
-                onPressed: onFinishTrip,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFC7FF2E), // Electric Green
-                  foregroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
+            if (_canCancelWithoutPenalty && widget.trip != null && widget.trip!.status == 'accepted') ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () => _cancelTripByPassenger(context),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: const BorderSide(color: Colors.red),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  elevation: 0,
-                ),
-                child: const Text(
-                  'Finalizar viaje (Simulación)',
-                  style: TextStyle(
-                    fontFamily: 'Google Sans',
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+                  child: const Text(
+                    'Cancelar Viaje (Sin Penalización)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                 ),
               ),
-            ),
+            ],
+
           ],
         ),
       ),
+    );
+  }
+
+  void _cancelTripByPassenger(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('¿Cancelar Viaje?'),
+          content: const Text('Han pasado más de 5 minutos, por lo que puedes cancelar sin penalización.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Mantener Viaje'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context); // Close dialog
+                if (widget.trip?.id != null) {
+                  final service = TripService();
+                  await service.cancelTrip(widget.trip!.id!, cancelReason: 'Cancelado por el pasajero después de 5 minutos');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Viaje cancelado exitosamente.')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Sí, Cancelar', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
     );
   }
 

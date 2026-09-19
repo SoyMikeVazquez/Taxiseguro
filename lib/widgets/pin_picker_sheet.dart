@@ -1,19 +1,26 @@
 import 'package:flutter/material.dart';
 
 class PinPickerSheet extends StatelessWidget {
-  final String title;
+  final String? title;
+  final String? buttonText;
+  final bool isOrigin;
   final String currentAddress;
   final VoidCallback onConfirm;
 
   const PinPickerSheet({
     super.key,
-    this.title = 'Fija tu destino',
+    this.title,
+    this.buttonText,
+    this.isOrigin = false,
     required this.currentAddress,
     required this.onConfirm,
   });
 
   @override
   Widget build(BuildContext context) {
+    final effectiveTitle = title ?? (isOrigin ? 'Fija tu punto de partida' : 'Fija tu destino');
+    final effectiveButtonText = buttonText ?? (isOrigin ? 'Confirmar punto de partida' : 'Confirmar destino');
+
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -44,9 +51,9 @@ class PinPickerSheet extends StatelessWidget {
               ),
             ),
 
-            // Title: Fija tu destino
+            // Title
             Text(
-              title,
+              effectiveTitle,
               style: const TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -83,14 +90,17 @@ class PinPickerSheet extends StatelessWidget {
                     width: 16,
                     height: 16,
                     decoration: BoxDecoration(
-                      color: Colors.black,
-                      borderRadius: BorderRadius.circular(4),
+                      color: isOrigin ? Colors.blue[700] : Colors.black,
+                      borderRadius: BorderRadius.circular(isOrigin ? 8 : 4),
                     ),
                     child: Center(
                       child: Container(
                         width: 6,
                         height: 6,
-                        color: Colors.white,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: isOrigin ? BoxShape.circle : BoxShape.rectangle,
+                        ),
                       ),
                     ),
                   ),
@@ -114,7 +124,7 @@ class PinPickerSheet extends StatelessWidget {
 
             const SizedBox(height: 16),
 
-            // Button: Confirmar / Buscar destino
+            // Button: Confirmar / Buscar
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -128,9 +138,9 @@ class PinPickerSheet extends StatelessWidget {
                   ),
                   elevation: 0,
                 ),
-                child: const Text(
-                  'Confirmar destino',
-                  style: TextStyle(
+                child: Text(
+                  effectiveButtonText,
+                  style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.bold,
                   ),

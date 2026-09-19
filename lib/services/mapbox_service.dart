@@ -21,8 +21,8 @@ class MapboxPlace {
     final center = json['center'] as List<dynamic>?;
     return MapboxPlace(
       id: json['id'] ?? '',
-      text: json['text_es'] ?? json['text'] ?? '',
-      placeName: json['place_name_es'] ?? json['place_name'] ?? '',
+      text: json['text_es'] ?? json['text'] ?? json['place_name_es'] ?? json['place_name'] ?? 'Ubicación seleccionada',
+      placeName: json['place_name_es'] ?? json['place_name'] ?? json['text_es'] ?? json['text'] ?? 'Ubicación seleccionada',
       longitude: center != null && center.length >= 2 ? (center[0] as num).toDouble() : 0.0,
       latitude: center != null && center.length >= 2 ? (center[1] as num).toDouble() : 0.0,
     );
@@ -84,7 +84,7 @@ class MapboxService {
         final data = json.decode(response.body);
         final features = data['features'] as List<dynamic>?;
         if (features != null && features.isNotEmpty) {
-          return features[0]['place_name_es'] ?? features[0]['place_name'] ?? features[0]['text'];
+          return features[0]['place_name_es'] ?? features[0]['place_name'] ?? features[0]['text_es'] ?? features[0]['text'] ?? 'Ubicación en el mapa';
         }
       }
     } catch (e) {

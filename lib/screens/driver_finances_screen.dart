@@ -93,7 +93,7 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
       }
 
       _groupedTrips[monthStr]!.add(trip);
-      final fare = trip.fare ?? 0.0;
+      final fare = (trip.fare ?? 0.0);
       _monthlyEarnings[monthStr] = (_monthlyEarnings[monthStr] ?? 0) + fare;
       _totalEarnings += fare;
     }
@@ -320,7 +320,7 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
       } else {
         key = '${d.month}/${d.year}';
       }
-      chartData[key] = (chartData[key] ?? 0.0) + (trip.fare ?? 0.0);
+      chartData[key] = (chartData[key] ?? 0.0) + ((trip.fare ?? 0.0) * 0.8); // Gráfica muestra ganancias reales
     }
 
     final sortedKeys = chartData.keys.toList()..sort((a, b) {
@@ -481,7 +481,27 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           const Text(
-            'Ganancias Totales (Filtro)',
+            'Total Cobrado',
+            style: TextStyle(
+              fontFamily: 'Google Sans',
+              color: Colors.white54,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '\$${_totalEarnings.toStringAsFixed(2)}',
+            style: const TextStyle(
+              fontFamily: 'Google Sans',
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Tus Ganancias (80%)',
             style: TextStyle(
               fontFamily: 'Google Sans',
               color: Colors.white70,
@@ -489,9 +509,9 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
               fontWeight: FontWeight.w500,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Text(
-            '\$${_totalEarnings.toStringAsFixed(2)}',
+            '\$${(_totalEarnings * 0.8).toStringAsFixed(2)}',
             style: const TextStyle(
               fontFamily: 'Google Sans',
               color: Color(0xFFC7FF2E), // AppColors.electricGreen
@@ -542,14 +562,27 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
             '${trips.length} viaje(s)',
             style: const TextStyle(color: Colors.black54),
           ),
-          trailing: Text(
-            '\$${earnings.toStringAsFixed(2)}',
-            style: const TextStyle(
-              fontFamily: 'Google Sans',
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-              color: Colors.black,
-            ),
+          trailing: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                'Total: \$${earnings.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.black54,
+                ),
+              ),
+              Text(
+                '\$${(earnings * 0.8).toStringAsFixed(2)}',
+                style: const TextStyle(
+                  fontFamily: 'Google Sans',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  color: Colors.black,
+                ),
+              ),
+            ],
           ),
           children: [
             Container(
@@ -574,7 +607,7 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
   Widget _buildTripItem(Trip trip) {
     final date = trip.completedAt ?? trip.createdAt ?? DateTime.now();
     final timeString = '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} - ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
-    final fare = trip.fare ?? 0.0;
+    final fare = (trip.fare ?? 0.0);
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -615,13 +648,27 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            '\$${fare.toStringAsFixed(2)}',
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-              color: Colors.black87,
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Total: \$${fare.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.black54,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '\$${(fare * 0.8).toStringAsFixed(2)}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.black87,
+                ),
+              ),
+            ],
           ),
         ],
       ),

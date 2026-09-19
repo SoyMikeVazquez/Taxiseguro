@@ -5,6 +5,15 @@ import 'package:latlong2/latlong.dart';
 import '../services/mapbox_service.dart';
 import '../services/location_service.dart';
 import '../env/env.dart';
+import 'dart:math';
+
+class SimulatedCar {
+  LatLng position;
+  double heading;
+  LatLng destination;
+
+  SimulatedCar({required this.position, required this.heading, required this.destination});
+}
 class MapWidget extends StatefulWidget {
   final LatLng? originLatLng;
   final String? destination;
@@ -36,7 +45,10 @@ class _MapWidgetState extends State<MapWidget> {
   LatLng? _destinationLatLng;
   List<LatLng> _routePoints = [];
   StreamSubscription<LatLng>? _locationSubscription;
-
+  
+  List<SimulatedCar> _simulatedCars = [];
+  Timer? _simulationTimer;
+  final Random _random = Random();
   static const String _mapboxToken = Env.mapboxApiKey;
 
   @override
@@ -62,6 +74,7 @@ class _MapWidgetState extends State<MapWidget> {
 
   @override
   void dispose() {
+    _simulationTimer?.cancel();
     _locationSubscription?.cancel();
     _mapController.dispose();
     super.dispose();
@@ -74,6 +87,7 @@ class _MapWidgetState extends State<MapWidget> {
         _currentPosition = realPosition;
       });
       _mapController.move(_currentPosition, 15.0);
+      _initSimulatedCars();
     }
 
     _locationSubscription = _locationService.getLocationStream().listen((pos) {
@@ -81,6 +95,60 @@ class _MapWidgetState extends State<MapWidget> {
         setState(() {
           _currentPosition = pos;
         });
+      }
+    });
+  }
+
+  void _initSimulatedCars() {
+    _simulatedCars.clear();
+    for (int i = 0; i < 5; i++) {
+      // Generar autos en un radio de ~1.5 km
+      double latOffset = (_random.nextDouble() - 0.5) * 0.02;
+      double lngOffset = (_random.nextDouble() - 0.5) * 0.02;
+      LatLng startPos = LatLng(_currentPosition.latitude + latOffset, _currentPosition.longitude + lngOffset);
+      
+      _simulatedCars.add(SimulatedCar(
+        position: startPos,
+        heading: _random.nextDouble() * 360,
+        destination: _generateRandomDestination(startPos),
+      ));
+    }
+
+    _simulationTimer?.cancel();
+    _simulationTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      _updateSimulatedCars();
+    });
+  }
+
+  LatLng _generateRandomDestination(LatLng currentPos) {
+    double latOffset = (_random.nextDouble() - 0.5) * 0.01;
+    double lngOffset = (_random.nextDouble() - 0.5) * 0.01;
+    return LatLng(currentPos.latitude + latOffset, currentPos.longitude + lngOffset);
+  }
+
+  void _updateSimulatedCars() {
+    if (!mounted) return;
+    setState(() {
+      for (var car in _simulatedCars) {
+        // Move towards destination slightly
+        double latDiff = car.destination.latitude - car.position.latitude;
+        double lngDiff = car.destination.longitude - car.position.longitude;
+        
+        // If close to destination, get a new one
+        if (latDiff.abs() < 0.0001 && lngDiff.abs() < 0.0001) {
+          car.destination = _generateRandomDestination(car.position);
+          latDiff = car.destination.latitude - car.position.latitude;
+          lngDiff = car.destination.longitude - car.position.longitude;
+        }
+
+        // Calculate heading
+        car.heading = atan2(lngDiff, latDiff) * (180 / pi);
+
+        // Move a fraction of the distance (simulating speed)
+        car.position = LatLng(
+          car.position.latitude + (latDiff * 0.1),
+          car.position.longitude + (lngDiff * 0.1),
+        );
       }
     });
   }
@@ -172,7 +240,7 @@ class _MapWidgetState extends State<MapWidget> {
             initialCenter: _currentPosition,
             initialZoom: 14.5,
             maxZoom: 18.0,
-            minZoom: 8.0,
+            minZoom: 2.0,
             onPositionChanged: (position, hasGesture) {
               if (widget.onCameraMove != null && position.center != null) {
                 widget.onCameraMove!(position.center!);
@@ -201,6 +269,38 @@ class _MapWidgetState extends State<MapWidget> {
                     color: const Color(0xFFFFD700), // Amarillo brillante
                   ),
                 ],
+              ),
+
+            // Simulated Cars Layer
+            if (_simulatedCars.isNotEmpty)
+              MarkerLayer(
+                markers: _simulatedCars.map((car) {
+                  return Marker(
+                    point: car.position,
+                    width: 32,
+                    height: 32,
+                    child: Transform.rotate(
+                      angle: car.heading * (pi / 180),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+                          ],
+                          border: Border.all(color: Colors.black12, width: 1),
+                        ),
+                        child: const Center(
+                          child: Icon(
+                            Icons.directions_car,
+                            color: Colors.black87,
+                            size: 18,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
               ),
 
             // Marcadores

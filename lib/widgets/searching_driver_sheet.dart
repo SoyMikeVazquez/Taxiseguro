@@ -4,14 +4,12 @@ class SearchingDriverSheet extends StatefulWidget {
   final String origin;
   final String destination;
   final VoidCallback onCancel;
-  final VoidCallback? onSimulateDriverAssigned;
 
   const SearchingDriverSheet({
     super.key,
     required this.origin,
     required this.destination,
     required this.onCancel,
-    this.onSimulateDriverAssigned,
   });
 
   @override
@@ -207,35 +205,6 @@ class _SearchingDriverSheetState extends State<SearchingDriverSheet> with Single
                 ],
               ),
             ),
-
-            const SizedBox(height: 16),
-
-            // Demo Simulation Button (Asignar Conductor)
-            if (widget.onSimulateDriverAssigned != null)
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: ElevatedButton.icon(
-                  onPressed: widget.onSimulateDriverAssigned,
-                  icon: const Icon(Icons.flash_on, color: Colors.black, size: 18),
-                  label: const Text(
-                    'Simular asignación de conductor',
-                    style: TextStyle(
-                      fontFamily: 'Google Sans',
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
-                    ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFC7FF2E),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    elevation: 0,
-                  ),
-                ),
-              ),
 
             const SizedBox(height: 12),
 

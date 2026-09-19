@@ -76,5 +76,23 @@
 	<string>La aplicación necesita acceder a la galería para subir los documentos del vehículo y el conductor.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>La aplicación necesita acceder a la cámara para tomar fotos de los documentos del vehículo y el conductor.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>taxiseguro</string>
+			</array>
+		</dict>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>location</string>
+	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>
