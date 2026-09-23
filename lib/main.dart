@@ -14,14 +14,22 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   if (Platform.isAndroid || Platform.isIOS) {
-    await initializeBackgroundService();
+    try {
+      await initializeBackgroundService();
+    } catch (e) {
+      debugPrint('Error initializing background service: $e');
+    }
   }
   
-  // Initialize Supabase using database credentials
-  await Supabase.initialize(
-    url: 'https://viqmzyevsvdzddmukfev.supabase.co',
-    publishableKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpcW16eWV2c3ZkemRkbXVrZmV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMTIxNjgsImV4cCI6MjA5Nzg4ODE2OH0.H40ahS2NmlgD1yCjCVf-i8TXTGHE6oBKvHBwl8OqbCA',
-  );
+  try {
+    // Initialize Supabase using database credentials
+    await Supabase.initialize(
+      url: 'https://viqmzyevsvdzddmukfev.supabase.co',
+      publishableKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpcW16eWV2c3ZkemRkbXVrZmV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMTIxNjgsImV4cCI6MjA5Nzg4ODE2OH0.H40ahS2NmlgD1yCjCVf-i8TXTGHE6oBKvHBwl8OqbCA',
+    );
+  } catch (e) {
+    debugPrint('Error initializing Supabase: $e');
+  }
 
   runApp(const TaxiSeguroApp());
 }
@@ -39,8 +47,9 @@ class TaxiSeguroApp extends StatelessWidget {
       themeMode: ThemeMode.light, // Puedes cambiar a ThemeMode.system si deseas
       home: StreamBuilder<AuthState>(
         stream: Supabase.instance.client.auth.onAuthStateChange,
+        initialData: AuthState(AuthChangeEvent.initialSession, Supabase.instance.client.auth.currentSession),
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
               body: Center(
                 child: CircularProgressIndicator(color: Colors.black),

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../services/mapbox_service.dart';
 import 'destination_item.dart';
 import 'package:latlong2/latlong.dart';
+import '../services/location_service.dart';
+import 'package:geolocator/geolocator.dart';
 
 class SearchBottomSheet extends StatefulWidget {
   final String? initialOrigin;
@@ -39,12 +41,32 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
   Timer? _debounceTimer;
   String _activeField = 'destination'; // 'origin' or 'destination'
   LatLng? _selectedOriginLatLng;
+  Position? _currentLocation;
 
   @override
   void initState() {
     super.initState();
-    _originController = TextEditingController(text: widget.initialOrigin ?? "Ubicación actual");
+    _originController = TextEditingController(text: widget.initialOrigin ?? "");
     _searchController = TextEditingController(text: widget.initialDestination ?? "");
+
+    LocationService().getCurrentLocation().then((pos) {
+      if (mounted && pos != null) {
+        setState(() {
+          _currentLocation = Position(
+            latitude: pos.latitude,
+            longitude: pos.longitude,
+            timestamp: DateTime.now(),
+            accuracy: 0,
+            altitude: 0,
+            heading: 0,
+            speed: 0,
+            speedAccuracy: 0,
+            altitudeAccuracy: 0,
+            headingAccuracy: 0,
+          );
+        });
+      }
+    });
 
     void expandSheet() {
       if (_sheetController.isAttached && _sheetController.size < 0.92) {
@@ -88,7 +110,14 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
         _isLoadingSuggestions = true;
       });
 
-      final results = await _mapboxService.searchPlaces(query);
+      final searchLat = _selectedOriginLatLng?.latitude ?? _currentLocation?.latitude;
+      final searchLng = _selectedOriginLatLng?.longitude ?? _currentLocation?.longitude;
+
+      final results = await _mapboxService.searchPlaces(
+        query,
+        proximityLat: searchLat,
+        proximityLng: searchLng,
+      );
 
       if (mounted) {
         setState(() {

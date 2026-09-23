@@ -1,7 +1,7 @@
 class PricingService {
-  // Constantes de negocio
-  static const double banderazo = 35.00;
-  static const double costoPorKm = 7.50;
+  // Tarifas aproximadas basadas en el modelo base de UberX (CDMX)
+  static const double banderazo = 20.00; // Tarifa base + Cuota de solicitud/seguridad
+  static const double costoPorKm = 5.50;
   static const double costoPorMinuto = 1.80;
   static const double tarifaMinima = 45.00;
 

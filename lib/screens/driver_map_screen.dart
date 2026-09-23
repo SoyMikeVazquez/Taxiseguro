@@ -35,10 +35,13 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   bool _locationPermissionGranted = false;
   
   StreamSubscription<LatLng>? _locationSubscription;
+  StreamSubscription<List<Trip>>? _pendingTripsSubscription;
+  final Set<String> _notifiedTripIds = {};
 
   @override
   void dispose() {
     _locationSubscription?.cancel();
+    _pendingTripsSubscription?.cancel();
     super.dispose();
   }
 
@@ -46,6 +49,7 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   void initState() {
     super.initState();
     _driverId = Supabase.instance.client.auth.currentUser?.id;
+    BackgroundServiceHelper.requestNotificationPermission();
     _initializeLocationAndState();
   }
 
@@ -88,6 +92,50 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
     _loadDriverState(isInitialLoad: true);
   }
 
+  void _startListeningToPendingTrips() {
+    _pendingTripsSubscription?.cancel();
+    _pendingTripsSubscription = _tripService.streamPendingTrips().listen((allTrips) {
+      if (!mounted || !_isDriverActive) return;
+
+      for (final trip in allTrips) {
+        if (trip.id == null || _notifiedTripIds.contains(trip.id)) continue;
+
+        // Validar antigüedad (últimos 30 minutos)
+        if (trip.createdAt != null) {
+          final diff = DateTime.now().difference(trip.createdAt!).inMinutes;
+          if (diff > 30) continue;
+        }
+
+        // Validar radio de cobertura
+        if (trip.originLat != null && trip.originLng != null) {
+          final distanceInMeters = Geolocator.distanceBetween(
+            _currentLocation.latitude,
+            _currentLocation.longitude,
+            trip.originLat!,
+            trip.originLng!,
+          );
+          if (distanceInMeters > 5000000) continue;
+        }
+
+        // Marcar como notificado
+        _notifiedTripIds.add(trip.id!);
+
+        // Emitir notificación con sonido y banner de alta prioridad
+        final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)}' : '';
+        final originStr = trip.originAddress.isNotEmpty ? trip.originAddress : 'Cerca de tu ubicación';
+        BackgroundServiceHelper.showAlertNotification(
+          '🚖 ¡Nuevo Viaje Solicitado!',
+          fareStr.isNotEmpty ? '$fareStr • $originStr. Toca para ver y aceptar.' : '$originStr. Toca para ver y aceptar.',
+        );
+      }
+    });
+  }
+
+  void _stopListeningToPendingTrips() {
+    _pendingTripsSubscription?.cancel();
+    _pendingTripsSubscription = null;
+  }
+
   Future<void> _loadDriverState({bool isInitialLoad = false}) async {
     if (_driverId == null) return;
     try {
@@ -103,6 +151,9 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
         setState(() {
           if (userResp != null && userResp['estatus'] != null) {
             _isDriverActive = userResp['estatus'] == 'activo';
+            if (_isDriverActive) {
+              _startListeningToPendingTrips();
+            }
           }
           _activeTrip = activeTrip;
         });
@@ -150,8 +201,10 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
           
       if (value) {
         BackgroundServiceHelper.startService();
+        _startListeningToPendingTrips();
       } else {
         BackgroundServiceHelper.stopService();
+        _stopListeningToPendingTrips();
       }
     } catch (e) {
       if (mounted) {

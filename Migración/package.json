@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "bcrypt": "^6.0.0",
-    "firebase-scrypt": "^2.2.0"
-  }
-}

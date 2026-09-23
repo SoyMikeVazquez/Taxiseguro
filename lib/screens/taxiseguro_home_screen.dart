@@ -61,12 +61,14 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   Timer? _geocodeDebounceTimer;
   LatLng? _lastPinCenter;
   StreamSubscription<Trip?>? _tripSubscription;
+  String? _lastNotifiedStatus;
 
   int _currentIndex = 0;
 
   @override
   void initState() {
     super.initState();
+    BackgroundServiceHelper.requestNotificationPermission();
     _checkActiveTrip();
     _fetchAds();
     _fetchUserStats();
@@ -212,6 +214,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
   void _listenToTrip(String tripId) {
     _tripSubscription?.cancel();
+    _lastNotifiedStatus = null;
     _tripSubscription = _tripService.streamTrip(tripId).listen((trip) {
       if (trip == null) return;
       if (mounted) {
@@ -221,19 +224,47 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
             BackgroundServiceHelper.updateTripStatus('Viaje Aceptado', 'Conductor en camino');
+            if (_lastNotifiedStatus != 'accepted') {
+              _lastNotifiedStatus = 'accepted';
+              BackgroundServiceHelper.showAlertNotification(
+                '🚖 ¡Conductor Asignado!',
+                'Un conductor aceptó tu solicitud y va en camino.',
+              );
+            }
           } else if (trip.status == 'arrived') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
             BackgroundServiceHelper.updateTripStatus('Conductor Llegó', 'Tu conductor está afuera');
+            if (_lastNotifiedStatus != 'arrived') {
+              _lastNotifiedStatus = 'arrived';
+              BackgroundServiceHelper.showAlertNotification(
+                '📍 ¡Tu Conductor Llegó!',
+                'El taxi está esperándote en tu punto de partida.',
+              );
+            }
           } else if (trip.status == 'in_progress') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
             BackgroundServiceHelper.updateTripStatus('Viaje Activo', 'En camino al destino');
+            if (_lastNotifiedStatus != 'in_progress') {
+              _lastNotifiedStatus = 'in_progress';
+              BackgroundServiceHelper.showAlertNotification(
+                '🛣️ Viaje en Curso',
+                'Vas en camino seguro a tu destino.',
+              );
+            }
           } else if (trip.status == 'completed') {
             _isSearchingDriver = false;
             _isDriverAssigned = false;
             _isTripCompleted = true;
             BackgroundServiceHelper.stopPassengerTrip();
+            if (_lastNotifiedStatus != 'completed') {
+              _lastNotifiedStatus = 'completed';
+              BackgroundServiceHelper.showAlertNotification(
+                '🏁 ¡Viaje Completado!',
+                'Has llegado a tu destino. ¡Gracias por viajar con TaxiSeguro!',
+              );
+            }
           } else if (trip.status == 'cancelled') {
             if (_currentTripId != null) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -251,7 +282,10 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             _selectedDestination = null;
             _showActiveTripDetails = false;
             BackgroundServiceHelper.stopPassengerTrip();
-            BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'Tu viaje ha sido cancelado.');
+            if (_lastNotifiedStatus != 'cancelled') {
+              _lastNotifiedStatus = 'cancelled';
+              BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'Tu viaje ha sido cancelado.');
+            }
           } else if (trip.status == 'pending') {
             BackgroundServiceHelper.updateTripStatus('TaxiSeguro', 'Buscando conductor...');
           }
@@ -276,15 +310,26 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
   void _onRouteSelected(String origin, LatLng? originLatLng, String destination, LatLng? destinationLatLng) {
     setState(() {
-      _selectedOrigin = origin.trim().isEmpty ? 'Ubicación actual' : origin;
-      if (originLatLng != null) {
-        _selectedOriginLatLng = originLatLng;
-      } else if (origin.toLowerCase().contains('ubicación actual')) {
+      if (origin.trim().isEmpty) {
+        _selectedOrigin = null;
         _selectedOriginLatLng = null;
+      } else {
+        _selectedOrigin = origin;
+        if (originLatLng != null) {
+          _selectedOriginLatLng = originLatLng;
+        } else if (origin.toLowerCase().contains('ubicación actual')) {
+          _selectedOriginLatLng = null;
+        }
       }
-      _selectedDestination = destination.trim().isEmpty ? 'Ubicación en el mapa' : destination;
-      if (destinationLatLng != null) {
-        _selectedDestinationLatLng = destinationLatLng;
+
+      if (destination.trim().isEmpty) {
+        _selectedDestination = null;
+        _selectedDestinationLatLng = null;
+      } else {
+        _selectedDestination = destination;
+        if (destinationLatLng != null) {
+          _selectedDestinationLatLng = destinationLatLng;
+        }
       }
       _isSearching = false;
     });
@@ -297,7 +342,15 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       if (_isPinPickerForOrigin) {
         _selectedOrigin = chosenAddress;
         _selectedOriginLatLng = _lastPinCenter;
-        _onRouteSelected(chosenAddress, _lastPinCenter, _selectedDestination ?? '', _selectedDestinationLatLng);
+        
+        final dest = _selectedDestination ?? '';
+        _onRouteSelected(chosenAddress, _lastPinCenter, dest, _selectedDestinationLatLng);
+        
+        if (dest.trim().isEmpty) {
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) _showSearchSheet(initialOrigin: chosenAddress);
+          });
+        }
       } else {
         _selectedDestinationLatLng = _lastPinCenter;
         _onRouteSelected(_selectedOrigin ?? 'Ubicación actual', _selectedOriginLatLng, chosenAddress, _lastPinCenter);
@@ -421,7 +474,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     final user = Supabase.instance.client.auth.currentUser;
     final userName = user?.email?.split('@')[0] ?? 'Alex';
 
-    final bool isSettingUpRide = _selectedDestination != null && _currentTripData == null;
+    final bool isSettingUpRide = _selectedOrigin != null && _selectedDestination != null && _currentTripData == null;
     final bool isTripActive = isSettingUpRide || _isPinPickerMode || (_currentTripData != null && (_showActiveTripDetails || _isTripCompleted));
 
     return PopScope(

@@ -156,6 +156,14 @@ class _MapWidgetState extends State<MapWidget> {
   @override
   void didUpdateWidget(MapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    
+    if (widget.isPinPickerMode && !oldWidget.isPinPickerMode) {
+      final centerLoc = widget.originLatLng ?? _currentPosition;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _mapController.move(centerLoc, 16.0);
+      });
+    }
+
     if (widget.destination != oldWidget.destination || widget.destinationLatLng != oldWidget.destinationLatLng || widget.originLatLng != oldWidget.originLatLng) {
       if (widget.destinationLatLng != null) {
         _destinationLatLng = widget.destinationLatLng;

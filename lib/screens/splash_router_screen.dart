@@ -25,6 +25,11 @@ class _SplashRouterScreenState extends State<SplashRouterScreen> {
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) {
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const TaxiseguroHomeScreen()),
+          );
+        }
         return;
       }
 

@@ -13,7 +13,7 @@ Future<void> initializeBackgroundService() async {
     'taxiseguro_foreground', // id
     'Alertas de Viaje TaxiSeguro', // title
     description: 'Notificaciones y estado de tus viajes en segundo plano.', // description
-    importance: Importance.high,
+    importance: Importance.max,
     playSound: true,
     enableVibration: true,
   );
@@ -25,7 +25,7 @@ Future<void> initializeBackgroundService() async {
     await flutterLocalNotificationsPlugin.initialize(
       settings: const InitializationSettings(
         iOS: DarwinInitializationSettings(),
-        android: AndroidInitializationSettings('launcher_icon'),
+        android: AndroidInitializationSettings('@mipmap/launcher_icon'),
       ),
     );
   }
@@ -87,10 +87,10 @@ void onStart(ServiceInstance service) async {
           android: AndroidNotificationDetails(
             'taxiseguro_foreground',
             'Alertas de Viaje TaxiSeguro',
-            icon: 'launcher_icon',
+            icon: '@mipmap/launcher_icon',
             ongoing: true,
-            importance: Importance.high,
-            priority: Priority.high,
+            importance: Importance.max,
+            priority: Priority.max,
             showWhen: true,
             playSound: true,
             enableVibration: true,
@@ -110,15 +110,20 @@ class BackgroundServiceHelper {
   static final _liveActivitiesPlugin = LiveActivities();
   static String? _liveActivityId;
 
+  static Future<bool> requestNotificationPermission() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
+    final status = await Permission.notification.status;
+    if (!status.isGranted) {
+      final result = await Permission.notification.request();
+      return result.isGranted;
+    }
+    return true;
+  }
+
   static Future<void> startService() async {
     if (!Platform.isAndroid && !Platform.isIOS) return;
     
-    if (Platform.isAndroid) {
-      final status = await Permission.notification.status;
-      if (!status.isGranted) {
-        await Permission.notification.request();
-      }
-    }
+    await requestNotificationPermission();
 
     final service = FlutterBackgroundService();
     bool isRunning = await service.isRunning();
@@ -255,25 +260,34 @@ class BackgroundServiceHelper {
   }
 
   // --- High Priority One-off Alert for Android & iOS ---
-  static Future<void> showAlertNotification(String title, String body) async {
+  static Future<void> showAlertNotification(String title, String body, {int? id}) async {
     if (!Platform.isAndroid && !Platform.isIOS) return;
+    
+    await requestNotificationPermission();
+
     final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
         FlutterLocalNotificationsPlugin();
     await flutterLocalNotificationsPlugin.show(
-      id: 889,
+      id: id ?? DateTime.now().millisecondsSinceEpoch.remainder(100000),
       title: title,
       body: body,
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           'taxiseguro_foreground',
           'Alertas de Viaje TaxiSeguro',
-          icon: 'launcher_icon',
+          icon: '@mipmap/launcher_icon',
           importance: Importance.max,
           priority: Priority.max,
+          fullScreenIntent: true,
+          showWhen: true,
           playSound: true,
           enableVibration: true,
         ),
-        iOS: DarwinNotificationDetails(),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
       ),
     );
   }
