@@ -1,0 +1,58 @@
+  Future<void> syncTripsToFacturacion() async {
+    try {
+      final tripsRes = await _supabase.from('trips').select();
+      final trips = (tripsRes as List<dynamic>?) ?? [];
+      List<dynamic> existingFacts = [];
+      try {
+        final factRes = await _supabase.from('facturacion').select();
+        existingFacts = (factRes as List<dynamic>?) ?? [];
+      } catch (_) {}
+
+      final Set<String> registeredTripIds = {};
+      for (var f in existingFacts) {
+        final datos = f['datos_adicionales'];
+        if (datos != null) {
+          try {
+            final map = datos is Map ? datos : jsonDecode(datos.toString());
+            if (map['trip_id'] != null) {
+              registeredTripIds.add(map['trip_id'].toString());
+            }
+          } catch (_) {}
+        }
+      }
+
+      for (var t in trips) {
+        final tripId = (t['id'] ?? '').toString();
+        final fare = (t['fare'] as num?)?.toDouble() ?? 0.0;
+        final status = (t['status'] ?? '').toString().toLowerCase().trim();
+        final isCompleted = status == 'completed' || status == 'completado' || status == 'finalizado';
+
+        if ((isCompleted || fare > 0) && status != 'cancelled' && tripId.isNotEmpty && !registeredTripIds.contains(tripId)) {
+          final gananciaConductor = (t['total_final'] as num?)?.toDouble() ?? (fare * 0.85);
+          final comisionApp = fare * 0.15;
+          final metodoPago = (t['metodo_pago'] ?? t['payment_method'] ?? 'efectivo').toString();
+          final fecha = t['completed_at'] ?? t['created_at'] ?? DateTime.now().toIso8601String();
+          final userId = t['user_id'] as String?;
+          final driverId = t['driver_id'] as String?;
+
+          try {
+            await _supabase.from('facturacion').insert({
+              'cantidad': fare,
+              'metodo_pago': metodoPago,
+              'fecha_servicio': fecha,
+              'status': 'completado',
+              'datos_adicionales': jsonEncode({
+                'trip_id': tripId,
+                'driver_id': driverId,
+                'user_id': userId,
+                'fare': fare,
+                'total_final': gananciaConductor,
+                'comision_app': comisionApp,
+              }),
+            });
+            registeredTripIds.add(tripId);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }

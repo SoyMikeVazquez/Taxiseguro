@@ -11,6 +11,7 @@ import '../services/location_service.dart';
 import '../services/background_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'active_trip_screen.dart';
+import '../services/driver_shift_service.dart';
 import '../env/env.dart';
 
 class DriverMapScreen extends StatefulWidget {
@@ -20,13 +21,13 @@ class DriverMapScreen extends StatefulWidget {
   State<DriverMapScreen> createState() => _DriverMapScreenState();
 }
 
-class _DriverMapScreenState extends State<DriverMapScreen> {
+class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingObserver {
   final TripService _tripService = TripService();
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
   
   String? _driverId;
-  bool _isDriverActive = true;
+  bool _isDriverActive = false; // Por default está como false
   Trip? _activeTrip;
   
   // Ubicación inicial por defecto (se actualizará con el GPS)
@@ -37,9 +38,13 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   StreamSubscription<LatLng>? _locationSubscription;
   StreamSubscription<List<Trip>>? _pendingTripsSubscription;
   final Set<String> _notifiedTripIds = {};
+  Timer? _disconnectionTimer;
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _disconnectionTimer?.cancel();
+    _checkAndDeactivateOnExit();
     _locationSubscription?.cancel();
     _pendingTripsSubscription?.cancel();
     super.dispose();
@@ -48,9 +53,59 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _driverId = Supabase.instance.client.auth.currentUser?.id;
     BackgroundServiceHelper.requestNotificationPermission();
     _initializeLocationAndState();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.detached) {
+      _checkAndDeactivateOnExit();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      _disconnectionTimer?.cancel();
+      _disconnectionTimer = Timer(const Duration(minutes: 15), () {
+        _checkAndDeactivateOnExit();
+      });
+    } else if (state == AppLifecycleState.resumed) {
+      _disconnectionTimer?.cancel();
+      _disconnectionTimer = null;
+      _loadDriverState();
+    }
+  }
+
+  /// Se desactiva cuando sale de la app y que no esté teniendo un viaje activo
+  Future<void> _checkAndDeactivateOnExit() async {
+    if (_driverId == null || !_isDriverActive) return;
+
+    try {
+      // 1. Verificar si el conductor está teniendo un viaje activo actualmente
+      final activeTrip = await _tripService.getActiveTrip(_driverId!);
+      if (activeTrip != null) {
+        debugPrint('DriverMapScreen: Conductor en viaje activo (${activeTrip.id}), NO se desactiva al salir.');
+        return;
+      }
+
+      // 2. Si no está en viaje, desactivar en Supabase y registrar fin de turno
+      debugPrint('DriverMapScreen: Desactivando conductor al salir de la app (sin viaje en curso)...');
+      _isDriverActive = false;
+      _stopListeningToPendingTrips();
+      BackgroundServiceHelper.stopService();
+
+      await Supabase.instance.client
+          .from('conductores')
+          .update({
+            'isActivo': false,
+            'estatus': 'inactivo',
+          })
+          .eq('user_id', _driverId!);
+
+      await DriverShiftService().recordDisconnection(_driverId!);
+    } catch (e) {
+      debugPrint('DriverMapScreen: Error al desactivar conductor al salir: $e');
+    }
   }
 
   Future<void> _initializeLocationAndState() async {
@@ -106,7 +161,7 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
           if (diff > 30) continue;
         }
 
-        // Validar radio de cobertura
+        // Validar radio de cobertura (5 km)
         if (trip.originLat != null && trip.originLng != null) {
           final distanceInMeters = Geolocator.distanceBetween(
             _currentLocation.latitude,
@@ -114,7 +169,8 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
             trip.originLat!,
             trip.originLng!,
           );
-          if (distanceInMeters > 5000000) continue;
+          // Cambiado a 5,000 metros (5km) para evitar alertas lejanas
+          if (distanceInMeters > 5000) continue;
         }
 
         // Marcar como notificado
@@ -141,7 +197,7 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
     try {
       final userResp = await Supabase.instance.client
           .from('conductores')
-          .select('estatus')
+          .select('isActivo, estatus')
           .eq('user_id', _driverId!)
           .maybeSingle();
       
@@ -149,11 +205,18 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
 
       if (mounted) {
         setState(() {
-          if (userResp != null && userResp['estatus'] != null) {
-            _isDriverActive = userResp['estatus'] == 'activo';
+          if (userResp != null) {
+            // Por default false si es null o false
+            final bool isActivo = userResp['isActivo'] == true;
+            _isDriverActive = isActivo;
             if (_isDriverActive) {
               _startListeningToPendingTrips();
+            } else {
+              _stopListeningToPendingTrips();
             }
+          } else {
+            _isDriverActive = false;
+            _stopListeningToPendingTrips();
           }
           _activeTrip = activeTrip;
         });
@@ -176,35 +239,66 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   }
 
   Future<void> _toggleDriverStatus(bool value) async {
+    if (_driverId == null) return;
+
     if (value) {
-      final status = await Permission.notification.request();
-      if (!status.isGranted) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Se requieren permisos de notificación para funcionar en segundo plano.'),
-              backgroundColor: Colors.red,
-            ),
-          );
+      try {
+        final status = await Permission.notification.request();
+        if (!status.isGranted) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Nota: Sin permisos de notificación no recibirás alertas en segundo plano.'),
+                backgroundColor: Colors.orange,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
         }
-        return;
+      } catch (e) {
+        debugPrint('Ignorando error de permisos (probablemente en macOS): $e');
       }
     }
 
     final previousStatus = _isDriverActive;
     setState(() => _isDriverActive = value);
     try {
+      // Actualizar isActivo y estatus en la tabla de conductores
       await Supabase.instance.client
           .from('conductores')
-          .update({'estatus': value ? 'activo' : 'inactivo'})
+          .update({
+            'isActivo': value,
+            'estatus': value ? 'activo' : 'inactivo',
+          })
           .eq('user_id', _driverId!);
           
       if (value) {
         BackgroundServiceHelper.startService();
         _startListeningToPendingTrips();
+        // Tomar su registro del día de forma inicial en horarios_conductores
+        await DriverShiftService().recordConnection(_driverId!);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Modo Activo: Listo para recibir viajes.'),
+              backgroundColor: Colors.black87,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
       } else {
         BackgroundServiceHelper.stopService();
         _stopListeningToPendingTrips();
+        await DriverShiftService().recordDisconnection(_driverId!);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Modo Desconectado. No recibirás nuevos viajes.'),
+              backgroundColor: Colors.black87,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -483,29 +577,32 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: _isDriverActive ? Colors.green[100] : Colors.grey[200],
+                          color: _isDriverActive ? const Color(0xFFC7FF2E).withValues(alpha: 0.25) : Colors.grey[200],
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
                           _isDriverActive ? Icons.wifi_tethering : Icons.portable_wifi_off,
-                          color: _isDriverActive ? Colors.green[700] : Colors.grey[600],
+                          color: _isDriverActive ? Colors.black87 : Colors.grey[600],
                           size: 20,
                         ),
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        _isDriverActive ? 'En línea' : 'Desconectado',
+                        _isDriverActive ? 'Activo' : 'Desconectado',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
-                          color: _isDriverActive ? Colors.green[800] : Colors.grey[800],
+                          color: _isDriverActive ? Colors.black : Colors.grey[800],
                         ),
                       ),
                     ],
                   ),
                   Switch(
                     value: _isDriverActive,
-                    activeColor: Colors.green,
+                    activeColor: const Color(0xFFC7FF2E),
+                    activeTrackColor: Colors.black,
+                    inactiveThumbColor: Colors.grey[400],
+                    inactiveTrackColor: Colors.grey[200],
                     onChanged: _toggleDriverStatus,
                   ),
                 ],
@@ -689,11 +786,6 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
                   const Icon(Icons.radar, size: 48, color: Colors.black26),
                   const SizedBox(height: 12),
                   Text('Buscando viajes cercanos...', style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  if (allTrips.isNotEmpty)
-                    Text('Debug: Hay ${allTrips.length} viajes pendientes, pero a más de 5km', style: const TextStyle(color: Colors.red, fontSize: 12))
-                  else
-                    const Text('No hay viajes en la base de datos (Realtime vacío)', style: TextStyle(color: Colors.black54, fontSize: 13)),
                 ],
               ),
             ),

@@ -25,6 +25,7 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
   Map<String, List<Trip>> _groupedTrips = {};
   Map<String, double> _monthlyEarnings = {};
   double _totalEarnings = 0.0;
+  DateTime? _nextCutoffDate;
 
   @override
   void initState() {
@@ -46,6 +47,17 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
       final trips = await _tripService.getAllDriverCompletedTrips(_driverId!);
       _allTrips = trips;
       _applyDateFilter();
+
+      try {
+        final cutoffRes = await Supabase.instance.client
+            .from('fechas_corte')
+            .select('fecha_corte')
+            .order('fecha_corte', ascending: false)
+            .limit(1);
+        if (cutoffRes.isNotEmpty) {
+          _nextCutoffDate = DateTime.tryParse(cutoffRes[0]['fecha_corte'].toString());
+        }
+      } catch (_) {}
 
       if (mounted) {
         setState(() {
@@ -531,7 +543,42 @@ class _DriverFinancesScreenState extends State<DriverFinancesScreen> {
                 style: const TextStyle(color: Colors.white, fontSize: 14),
               ),
             ],
-          )
+          ),
+          if (_nextCutoffDate != null) ...[
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.event_available, color: Colors.white54, size: 20),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Próximo Corte:',
+                    style: TextStyle(
+                      fontFamily: 'Google Sans',
+                      color: Colors.white54,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${_nextCutoffDate!.day.toString().padLeft(2, '0')}/${_nextCutoffDate!.month.toString().padLeft(2, '0')}/${_nextCutoffDate!.year}',
+                    style: const TextStyle(
+                      fontFamily: 'Google Sans',
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

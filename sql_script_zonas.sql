@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS zonas_tarifa_dinamica (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name TEXT NOT NULL,
+  lat DOUBLE PRECISION NOT NULL,
+  lng DOUBLE PRECISION NOT NULL,
+  radius_km DOUBLE PRECISION NOT NULL,
+  percentage_increase DOUBLE PRECISION NOT NULL,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);

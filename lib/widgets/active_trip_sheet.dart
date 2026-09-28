@@ -37,9 +37,12 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
   String _vehicleInfo = '';
   String _plateNumber = '';
   String _rating = '5.0';
+  String? _driverPhoto;
   bool _isLoadingDriver = true;
   Timer? _cancelTimer;
   bool _canCancelWithoutPenalty = false;
+  Timer? _waitTimer;
+  int _remainingSeconds = 7 * 60;
 
   @override
   void initState() {
@@ -50,12 +53,45 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     _rating = widget.rating;
     _fetchDriverInfo();
     _startCancelTimer();
+    _startWaitTimerIfNeeded();
   }
 
   @override
   void dispose() {
     _cancelTimer?.cancel();
+    _waitTimer?.cancel();
     super.dispose();
+  }
+
+  void _startWaitTimerIfNeeded() {
+    if (widget.trip?.status == 'arrived') {
+      final arrivedAt = widget.trip?.arrivedAt?.toLocal() ?? DateTime.now();
+      final now = DateTime.now();
+      final diff = now.difference(arrivedAt);
+      _remainingSeconds = (7 * 60) - diff.inSeconds;
+      
+      if (_remainingSeconds <= 0) {
+        _waitTimer?.cancel();
+        return;
+      }
+      
+      _waitTimer?.cancel();
+      _waitTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        setState(() {
+          _remainingSeconds--;
+          if (_remainingSeconds <= 0) {
+            timer.cancel();
+          }
+        });
+      });
+    } else {
+      _waitTimer?.cancel();
+      _waitTimer = null;
+    }
   }
 
   void _startCancelTimer() {
@@ -85,6 +121,9 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     if (widget.trip?.driverId != oldWidget.trip?.driverId) {
       _fetchDriverInfo();
     }
+    if (widget.trip?.status != oldWidget.trip?.status || widget.trip?.arrivedAt != oldWidget.trip?.arrivedAt) {
+      _startWaitTimerIfNeeded();
+    }
   }
 
   Future<void> _fetchDriverInfo() async {
@@ -99,11 +138,12 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     if (profile != null && mounted) {
       setState(() {
         _driverName = profile['nombre_completo'] ?? profile['nombre'] ?? widget.driverName;
+        _driverPhoto = profile['imagen_perfil'] as String?;
         final auto = profile['modelo_auto'] ?? 'Auto';
         final color = profile['color_auto'] ?? '';
         _vehicleInfo = color.isNotEmpty ? '$auto • $color' : auto;
         _plateNumber = profile['placas'] ?? widget.plateNumber;
-        _rating = profile['calificacion']?.toString() ?? '5.0';
+        _rating = profile['calificacion_promedio']?.toString() ?? profile['calificacion']?.toString() ?? '5.0';
         _isLoadingDriver = false;
       });
     } else if (mounted) {
@@ -370,6 +410,44 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
 
             const SizedBox(height: 16),
             const Divider(height: 1),
+            
+            if (widget.trip?.status == 'arrived') ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _remainingSeconds < 60 ? Colors.red.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: _remainingSeconds < 60 ? Colors.red : Colors.orange),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.timer, color: _remainingSeconds < 60 ? Colors.red : Colors.orange, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Tiempo de espera restante: ${(_remainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(_remainingSeconds % 60).toString().padLeft(2, '0')}',
+                      style: TextStyle(
+                        fontFamily: 'Google Sans',
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: _remainingSeconds < 60 ? Colors.red : Colors.orange[800],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Center(
+                child: Text(
+                  'El viaje se cancelará si no subes antes de este tiempo.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontFamily: 'Inter', fontSize: 11, color: Colors.black54),
+                ),
+              ),
+            ],
+            
             const SizedBox(height: 16),
 
             // Driver & Vehicle Card
@@ -379,7 +457,12 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
                 CircleAvatar(
                   radius: 28,
                   backgroundColor: Colors.grey[200],
-                  child: const Icon(Icons.person, size: 36, color: Colors.black54),
+                  backgroundImage: _driverPhoto != null && _driverPhoto!.isNotEmpty
+                      ? NetworkImage(_driverPhoto!)
+                      : null,
+                  child: _driverPhoto == null || _driverPhoto!.isEmpty
+                      ? const Icon(Icons.person, size: 36, color: Colors.black54)
+                      : null,
                 ),
                 const SizedBox(width: 14),
                 Expanded(

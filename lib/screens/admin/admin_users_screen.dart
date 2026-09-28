@@ -156,55 +156,58 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                 ),
                               ],
                             ),
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                              leading: CircleAvatar(
-                                radius: 24,
-                                backgroundColor: isAdmin
-                                    ? Colors.black
-                                    : isConductor
+                            child: Material(
+                              color: Colors.transparent,
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                                leading: CircleAvatar(
+                                  radius: 24,
+                                  backgroundColor: isAdmin
+                                      ? Colors.black
+                                      : isConductor
+                                          ? const Color(0xFFC7FF2E)
+                                          : const Color(0xFFF0F0F0),
+                                  child: Icon(
+                                    isAdmin
+                                        ? Icons.admin_panel_settings
+                                        : isConductor
+                                            ? Icons.local_taxi
+                                            : Icons.person,
+                                    color: isAdmin
                                         ? const Color(0xFFC7FF2E)
-                                        : const Color(0xFFF0F0F0),
-                                child: Icon(
-                                  isAdmin
-                                      ? Icons.admin_panel_settings
-                                      : isConductor
-                                          ? Icons.local_taxi
-                                          : Icons.person,
-                                  color: isAdmin
-                                      ? const Color(0xFFC7FF2E)
-                                      : isConductor
-                                          ? Colors.black
-                                          : Colors.black87,
-                                  size: 24,
-                                ),
-                              ),
-                              title: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      name,
-                                      style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
+                                        : isConductor
+                                            ? Colors.black
+                                            : Colors.black87,
+                                    size: 24,
                                   ),
-                                  if (isAdmin)
-                                    Container(
-                                      margin: const EdgeInsets.only(left: 6),
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                      decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(10)),
-                                      child: const Text('ADMIN', style: TextStyle(color: Color(0xFFC7FF2E), fontSize: 10, fontWeight: FontWeight.bold)),
+                                ),
+                                title: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        name,
+                                        style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
                                     ),
-                                ],
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const SizedBox(height: 2),
-                                  Text(email, style: const TextStyle(fontSize: 13, color: Colors.black87)),
-                                  Text('Tel: $phone', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                                ],
+                                    if (isAdmin)
+                                      Container(
+                                        margin: const EdgeInsets.only(left: 6),
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(10)),
+                                        child: const Text('ADMIN', style: TextStyle(color: Color(0xFFC7FF2E), fontSize: 10, fontWeight: FontWeight.bold)),
+                                      ),
+                                  ],
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 2),
+                                    Text(email, style: const TextStyle(fontSize: 13, color: Colors.black87)),
+                                    Text('Tel: $phone', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                  ],
+                                ),
                               ),
                             ),
                           ).animate().fade(duration: 300.ms, delay: (index * 30).ms).slideY(begin: 0.05, end: 0);

@@ -7,6 +7,8 @@ import 'driver_profile_screen.dart';
 import '../theme/app_theme.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_screen.dart';
+import '../services/trip_service.dart';
+import '../services/driver_shift_service.dart';
 
 class DriverMainScreen extends StatefulWidget {
   const DriverMainScreen({super.key});
@@ -59,9 +61,33 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
                   _buildNavItem(icon: Icons.account_balance_wallet, index: 1),
                   _buildNavItem(icon: Icons.settings, index: 2),
                   _buildNavItem(icon: Icons.logout, index: 3, isLogout: true, onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    final nav = Navigator.of(context);
+                    final driverId = Supabase.instance.client.auth.currentUser?.id;
+                    if (driverId != null) {
+                      final activeTrip = await TripService().getActiveTrip(driverId);
+                      if (activeTrip != null) {
+                        if (mounted) {
+                          messenger.showSnackBar(
+                            const SnackBar(
+                              content: Text('No puedes cerrar sesión mientras tienes un viaje activo en curso.'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                        return;
+                      }
+                      try {
+                        await Supabase.instance.client.from('conductores').update({
+                          'isActivo': false,
+                          'estatus': 'inactivo',
+                        }).eq('user_id', driverId);
+                        await DriverShiftService().recordDisconnection(driverId);
+                      } catch (_) {}
+                    }
                     await Supabase.instance.client.auth.signOut();
                     if (mounted) {
-                      Navigator.of(context).pushAndRemoveUntil(
+                      nav.pushAndRemoveUntil(
                         MaterialPageRoute(builder: (_) => const AuthScreen()),
                         (route) => false,
                       );

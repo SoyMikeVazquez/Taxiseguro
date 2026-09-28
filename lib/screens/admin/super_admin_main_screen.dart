@@ -8,7 +8,10 @@ import 'admin_users_screen.dart';
 import 'admin_finances_screen.dart';
 import 'admin_heatmap_screen.dart';
 import 'admin_approvals_screen.dart';
-import 'admin_management_screen.dart';
+import 'admin_trips_history_screen.dart';
+import 'admin_cutoff_dates_screen.dart';
+import 'admin_ads_screen.dart';
+import '../../widgets/admin/dashboard_revenue_card.dart';
 
 class SuperAdminMainScreen extends StatefulWidget {
   const SuperAdminMainScreen({super.key});
@@ -19,6 +22,7 @@ class SuperAdminMainScreen extends StatefulWidget {
 
 class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
   final AdminService _adminService = AdminService();
+  final GlobalKey<DashboardRevenueCardState> _revenueCardKey = GlobalKey<DashboardRevenueCardState>();
   bool _isLoading = true;
   AdminStats? _stats;
 
@@ -36,6 +40,7 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
         _stats = stats;
         _isLoading = false;
       });
+      _revenueCardKey.currentState?.reload();
     }
   }
 
@@ -50,7 +55,10 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
         child: _isLoading
             ? const Center(child: CircularProgressIndicator(color: Colors.black))
             : RefreshIndicator(
-                onRefresh: _loadStats,
+                onRefresh: () async {
+                  await _loadStats();
+                  await _revenueCardKey.currentState?.reload();
+                },
                 color: Colors.black,
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
@@ -104,30 +112,31 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                             ),
                           ],
                         ),
-                        GestureDetector(
-                          onTap: () async {
-                            await Supabase.instance.client.auth.signOut();
-                            if (context.mounted) {
-                              Navigator.of(context).pushAndRemoveUntil(
-                                MaterialPageRoute(builder: (_) => const AuthScreen()),
-                                (route) => false,
-                              );
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.05),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ],
-                            ),
-                            child: const Icon(Icons.logout, color: Colors.redAccent, size: 22),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.05),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.logout, color: Colors.redAccent, size: 24),
+                            padding: const EdgeInsets.all(14),
+                            tooltip: 'Cerrar sesión',
+                            onPressed: () async {
+                              await Supabase.instance.client.auth.signOut();
+                              if (context.mounted) {
+                                Navigator.of(context).pushAndRemoveUntil(
+                                  MaterialPageRoute(builder: (_) => const AuthScreen()),
+                                  (route) => false,
+                                );
+                              }
+                            },
                           ),
                         ),
                       ],
@@ -214,7 +223,7 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                             '${_stats?.totalUsers ?? 0}',
                             'Registrados',
                             Icons.people_alt,
-                            Colors.blueAccent,
+                            const Color(0xFFC7FF2E),
                           ),
                         ),
                       ],
@@ -230,25 +239,37 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                             '${_stats?.totalTrips ?? 0}',
                             'Completados',
                             Icons.navigation,
-                            Colors.purpleAccent,
+                            const Color(0xFFC7FF2E),
+                            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminTripsHistoryScreen())),
+                            showActionIcon: true,
                           ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: _buildMetricCard(
-                            'Comisión App (15%)',
-                            '\$${(_stats?.platformCommission ?? 0).toStringAsFixed(0)}',
-                            'Ingreso estimado',
-                            Icons.monetization_on,
-                            Colors.green,
+                            'Próximo Corte',
+                            _stats?.nextCutoffDate != null ? '${_stats!.nextCutoffDate!.day.toString().padLeft(2, '0')}/${_stats!.nextCutoffDate!.month.toString().padLeft(2, '0')}' : 'N/A',
+                            'Fecha programada',
+                            Icons.event_available,
+                            const Color(0xFFC7FF2E),
+                            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminCutoffDatesScreen())),
+                            showActionIcon: true,
                           ),
                         ),
                       ],
                     ).animate().fade(duration: 400.ms, delay: 150.ms).slideY(begin: 0.1, end: 0),
 
+                    const SizedBox(height: 20),
+
+                    // Gráfica de Ingresos, Métodos de Pago y Acceso a Finanzas Generales
+                    DashboardRevenueCard(
+                      key: _revenueCardKey,
+                      adminService: _adminService,
+                    ).animate().fade(duration: 400.ms, delay: 180.ms).slideY(begin: 0.1, end: 0),
+
                     const SizedBox(height: 28),
 
-                    // Menú General de Opciones (Los 6 Módulos del Diagrama)
+                    // Menú General de Opciones
                     const Text(
                       'Panel de Control',
                       style: TextStyle(
@@ -281,9 +302,9 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                     // 3. Visualizador en Gráfica de Finanzas
                     _buildModuleTile(
                       title: '3. Visualizador en Gráfica de Finanzas',
-                      subtitle: 'Gráficas de facturación, comisiones retenidas del 15% y balances',
+                      subtitle: 'Gráficas de facturación, comisiones retenidas del 20% y balances',
                       icon: Icons.bar_chart_rounded,
-                      badge: 'fl_chart',
+                      badge: 'Finanzas',
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminFinancesScreen())),
                     ),
 
@@ -306,13 +327,31 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminApprovalsScreen())).then((_) => _loadStats()),
                     ),
 
-                    // 6. Creador de Super Admins
+                    // 6. Historial de Viajes Global
                     _buildModuleTile(
-                      title: '6. Creador de Super Admins',
-                      subtitle: 'Asignar y gestionar permisos de Super Administrador con acceso total',
-                      icon: Icons.admin_panel_settings_outlined,
-                      badge: 'Seguridad',
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminManagementScreen())),
+                      title: '6. Historial y Monitoreo de Viajes',
+                      subtitle: 'Listado global de todos los viajes registrados por día con buscador',
+                      icon: Icons.history_edu,
+                      badge: 'Historial Global',
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminTripsHistoryScreen())),
+                    ),
+
+                    // 7. Fechas de Corte
+                    _buildModuleTile(
+                      title: '7. Fechas de Corte (Pagos de Conductores)',
+                      subtitle: 'Listado de fechas de corte y seguimiento de pagos de la plataforma',
+                      icon: Icons.calendar_month_outlined,
+                      badge: 'Pagos',
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminCutoffDatesScreen())),
+                    ),
+
+                    // 8. Administrador de Anuncios
+                    _buildModuleTile(
+                      title: '8. Administrador de Anuncios',
+                      subtitle: 'Crear, editar y eliminar los anuncios (Ads) de la plataforma',
+                      icon: Icons.campaign_outlined,
+                      badge: 'Ads',
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminAdsScreen())),
                     ),
                   ],
                 ),
@@ -321,8 +360,8 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
     );
   }
 
-  Widget _buildMetricCard(String title, String mainValue, String subValue, IconData icon, Color iconColor) {
-    return Container(
+  Widget _buildMetricCard(String title, String mainValue, String subValue, IconData icon, Color iconColor, {VoidCallback? onTap, bool showActionIcon = false}) {
+    final cardContent = Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -353,15 +392,43 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          Text(
-            mainValue,
-            style: const TextStyle(fontFamily: 'Google Sans', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    mainValue,
+                    style: const TextStyle(fontFamily: 'Google Sans', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(subValue, style: const TextStyle(fontFamily: 'Inter', color: Colors.grey, fontSize: 11)),
+                ],
+              ),
+              if (showActionIcon)
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.arrow_forward, size: 16, color: Colors.black87),
+                ),
+            ],
           ),
-          const SizedBox(height: 2),
-          Text(subValue, style: const TextStyle(fontFamily: 'Inter', color: Colors.grey, fontSize: 11)),
         ],
       ),
     );
+
+    if (onTap != null) {
+      return GestureDetector(
+        onTap: onTap,
+        child: cardContent,
+      );
+    }
+    return cardContent;
   }
 
   Widget _buildModuleTile({

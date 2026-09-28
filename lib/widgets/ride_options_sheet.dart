@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 import '../services/pricing_service.dart';
 
 class RideOptionsSheet extends StatelessWidget {
   final String origin;
+  final LatLng? originLatLng;
   final String destination;
   final double? distanceMeters;
   final double? durationSeconds;
@@ -14,6 +16,7 @@ class RideOptionsSheet extends StatelessWidget {
   const RideOptionsSheet({
     super.key,
     required this.origin,
+    this.originLatLng,
     required this.destination,
     this.distanceMeters,
     this.durationSeconds,
@@ -28,7 +31,7 @@ class RideOptionsSheet extends StatelessWidget {
     // Calcular tarifa en tiempo real (o fallback a $120.00 si Mapbox aún no responde)
     String displayedPrice = '\$120.00';
     if (distanceMeters != null && durationSeconds != null) {
-      final double price = PricingService.calculateDynamicPrice(distanceMeters!, durationSeconds!);
+      final double price = PricingService.calculateDynamicPrice(distanceMeters!, durationSeconds!, origin: originLatLng);
       displayedPrice = '\$${price.toStringAsFixed(2)}';
     }
     return Container(
@@ -80,7 +83,7 @@ class RideOptionsSheet extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       child: Row(
                         children: [
-                          const Icon(Icons.my_location, color: Colors.blueAccent, size: 18),
+                          const Icon(Icons.my_location, color: Colors.black, size: 18),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(

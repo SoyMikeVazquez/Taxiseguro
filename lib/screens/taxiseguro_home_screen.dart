@@ -15,11 +15,13 @@ import '../screens/trip_history_screen.dart';
 import '../screens/profile_screen.dart';
 import '../models/trip.dart';
 import '../services/trip_service.dart';
+import '../services/pricing_service.dart';
 import '../services/mapbox_service.dart';
 import '../services/pricing_service.dart';
 import '../services/location_service.dart';
 import '../theme/app_theme.dart';
 import '../services/background_service.dart';
+import '../services/rating_service.dart';
 import 'auth_screen.dart';
 
 class TaxiseguroHomeScreen extends StatefulWidget {
@@ -72,6 +74,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     _checkActiveTrip();
     _fetchAds();
     _fetchUserStats();
+    PricingService.loadDynamicZones();
   }
 
   Future<void> _fetchUserStats() async {
@@ -96,24 +99,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
     try {
       // Fetch user rating
-      final ratingsResponse = await Supabase.instance.client
-          .from('ratings')
-          .select('rating')
-          .eq('receiver_id', user.id);
-          
-      final ratingsList = ratingsResponse as List<dynamic>;
-      double avgRating = 5.0;
-      if (ratingsList.isNotEmpty) {
-        double sum = 0;
-        for (var r in ratingsList) {
-          sum += (r['rating'] as num).toDouble();
-        }
-        avgRating = sum / ratingsList.length;
-      }
-
+      final ratingService = RatingService();
+      final stats = await ratingService.getUserRatingStats(user.id);
       if (mounted) {
         setState(() {
-          _userRating = avgRating;
+          _userRating = stats['average'] as double;
         });
       }
     } catch (e) {
@@ -360,7 +350,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
 
   Future<void> _onCancelRide() async {
     if (_currentTripId != null) {
-      await _tripService.cancelTrip(_currentTripId!);
+      await _tripService.cancelTrip(_currentTripId!, cancelReason: 'Cancelado por el pasajero');
       BackgroundServiceHelper.stopPassengerTrip();
     }
     
@@ -389,6 +379,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     final double calculatedFare = PricingService.calculateDynamicPrice(
       _routeDistance ?? 0,
       _routeDuration ?? 0,
+      origin: _selectedOriginLatLng,
     );
 
     final locService = LocationService();
@@ -933,6 +924,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                         )
                       : RideOptionsSheet(
                           origin: _selectedOrigin ?? 'Ubicación actual',
+                          originLatLng: _selectedOriginLatLng,
                           destination: _selectedDestination!,
                           distanceMeters: _routeDistance,
                           durationSeconds: _routeDuration,

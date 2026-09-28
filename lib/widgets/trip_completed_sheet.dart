@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/trip.dart';
+import '../services/rating_service.dart';
 
 class TripCompletedSheet extends StatefulWidget {
   final Trip trip;
@@ -149,7 +151,27 @@ class _TripCompletedSheetState extends State<TripCompletedSheet> {
               width: double.infinity,
               height: 56,
               child: ElevatedButton(
-                onPressed: widget.onDismiss,
+                onPressed: () async {
+                  if (_rating > 0 && widget.trip.id != null) {
+                    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+                    final driverId = widget.trip.driverId;
+                    if (currentUserId != null && driverId != null && driverId.isNotEmpty) {
+                      try {
+                        final ratingService = RatingService();
+                        await ratingService.submitRating(
+                          tripId: widget.trip.id!,
+                          reviewerId: currentUserId,
+                          targetId: driverId,
+                          role: 'driver',
+                          rating: _rating.toDouble(),
+                        );
+                      } catch (e) {
+                        debugPrint('Error guardando calificacion en TripCompletedSheet: $e');
+                      }
+                    }
+                  }
+                  widget.onDismiss();
+                },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.black,
                   foregroundColor: Colors.white,

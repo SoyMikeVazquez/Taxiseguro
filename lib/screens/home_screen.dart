@@ -315,6 +315,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             height: MediaQuery.of(context).size.height * 0.65,
                             child: RideOptionsSheet(
                               origin: _selectedOrigin ?? 'Ubicación actual',
+                              originLatLng: _selectedOriginLatLng,
                               destination: _selectedDestination!,
                               distanceMeters: _routeDistance,
                               durationSeconds: _routeDuration,

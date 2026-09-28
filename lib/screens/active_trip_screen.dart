@@ -10,6 +10,7 @@ import '../services/trip_service.dart';
 import '../services/location_service.dart';
 import '../services/background_service.dart';
 import '../env/env.dart';
+import '../services/rating_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 class ActiveTripScreen extends StatefulWidget {
   final Trip trip;
@@ -27,6 +28,10 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   LatLng? _driverLocation;
   final MapController _mapController = MapController();
   StreamSubscription<Trip?>? _tripSubscription;
+  Timer? _waitTimer;
+  int _remainingSeconds = 7 * 60;
+
+  Map<String, dynamic>? _passengerInfo;
 
   @override
   void initState() {
@@ -34,6 +39,67 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     _currentTrip = widget.trip;
     _fetchRoute();
     _listenToTripUpdates();
+    _loadPassengerInfo();
+    _startWaitTimerIfNeeded();
+  }
+
+  void _startWaitTimerIfNeeded() {
+    if (_currentTrip.status == 'arrived') {
+      final arrivedAt = _currentTrip.arrivedAt?.toLocal() ?? DateTime.now();
+      final now = DateTime.now();
+      final diff = now.difference(arrivedAt);
+      _remainingSeconds = (7 * 60) - diff.inSeconds;
+      
+      if (_remainingSeconds <= 0) {
+        _cancelTripDueToTimeout();
+        return;
+      }
+      
+      _waitTimer?.cancel();
+      _waitTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        setState(() {
+          _remainingSeconds--;
+          if (_remainingSeconds <= 0) {
+            timer.cancel();
+            _cancelTripDueToTimeout();
+          }
+        });
+      });
+    } else {
+      _waitTimer?.cancel();
+      _waitTimer = null;
+    }
+  }
+
+  Future<void> _cancelTripDueToTimeout() async {
+    if (_currentTrip.id == null || _currentTrip.status == 'cancelled') return;
+    await _tripService.updateTripStatus(_currentTrip.id!, 'cancelled');
+    BackgroundServiceHelper.stopDriverTrip();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Viaje cancelado: tiempo de espera de 7 min excedido.'), backgroundColor: Colors.red),
+      );
+      Navigator.of(context).popUntil((route) => route.isFirst); 
+    }
+  }
+
+  Future<void> _loadPassengerInfo() async {
+    if (_currentTrip.userId.isNotEmpty && _currentTrip.id != 'simulated_trip_123') {
+      try {
+        final info = await _tripService.getPassengerPublicInfo(_currentTrip.userId);
+        if (mounted) {
+          setState(() {
+            _passengerInfo = info;
+          });
+        }
+      } catch (e) {
+        debugPrint('Error cargando info del pasajero: $e');
+      }
+    }
   }
 
   void _listenToTripUpdates() {
@@ -50,6 +116,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           setState(() {
             _currentTrip = trip;
           });
+          _startWaitTimerIfNeeded();
         }
       }
     });
@@ -66,8 +133,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           TextButton(
             onPressed: () {
               BackgroundServiceHelper.stopDriverTrip();
-              Navigator.of(context).pop(); // Close dialog
-              Navigator.of(context).pop(); // Return to map screen
+              Navigator.of(context).popUntil((route) => route.isFirst); // Close dialog and return to main screen
             },
             child: const Text('Entendido', style: TextStyle(color: Colors.black)),
           ),
@@ -78,6 +144,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   @override
   void dispose() {
+    _waitTimer?.cancel();
     _tripSubscription?.cancel();
     super.dispose();
   }
@@ -125,27 +192,39 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             setState(() {
               _routePoints = points;
             });
-            if (points.length >= 2) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                try {
-                  final bounds = LatLngBounds.fromPoints(points);
-                  if (bounds.north != bounds.south || bounds.east != bounds.west) {
-                    _mapController.fitCamera(
-                      CameraFit.bounds(
-                        bounds: bounds,
-                        padding: const EdgeInsets.only(top: 60.0, left: 40.0, right: 40.0, bottom: 250.0),
-                        maxZoom: 16.5,
-                      ),
-                    );
-                  }
-                } catch (_) {}
-              });
-            }
           }
         }
       }
     } catch (e) {
       print('Error fetching route: $e');
+    }
+
+    // Siempre intentar ajustar la cámara, ya sea con los puntos de la ruta o con los marcadores
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          List<LatLng> boundsPoints = _routePoints.isNotEmpty ? _routePoints : [LatLng(lat1, lng1), LatLng(lat2, lng2)];
+          
+          // Si los puntos son exactamente los mismos, añadir un offset mínimo para que no colapse
+          if (boundsPoints.length == 2 && boundsPoints[0].latitude == boundsPoints[1].latitude && boundsPoints[0].longitude == boundsPoints[1].longitude) {
+            boundsPoints.add(LatLng(lat1 + 0.005, lng1 + 0.005));
+            boundsPoints.add(LatLng(lat1 - 0.005, lng1 - 0.005));
+          }
+
+          final bounds = LatLngBounds.fromPoints(boundsPoints);
+          if (bounds.north != bounds.south || bounds.east != bounds.west) {
+            _mapController.fitCamera(
+              CameraFit.bounds(
+                bounds: bounds,
+                padding: const EdgeInsets.only(top: 80.0, left: 50.0, right: 50.0, bottom: 350.0), // Padding extra abajo por el BottomSheet
+                maxZoom: 16.5,
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint('Error fitting camera: $e');
+        }
+      });
     }
   }
 
@@ -184,9 +263,11 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
           fare: _currentTrip.fare,
           distanceKm: _currentTrip.distanceKm,
           createdAt: _currentTrip.createdAt,
+          arrivedAt: newStatus == 'arrived' ? DateTime.now() : _currentTrip.arrivedAt,
           completedAt: _currentTrip.completedAt,
         );
       });
+      _startWaitTimerIfNeeded();
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -259,22 +340,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   Future<Map<String, String?>> _getDriverInfo() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) return {'name': null, 'photo': null};
-    try {
-      final data = await Supabase.instance.client
-          .from('conductores')
-          .select('nombre, imagen_perfil')
-          .eq('user_id', user.id)
-          .maybeSingle();
-      if (data != null) {
-        return {
-          'name': data['nombre'] as String?,
-          'photo': data['imagen_perfil'] as String?,
-        };
-      }
-    } catch (e) {
-      print('Error fetching driver info: $e');
-    }
-    return {'name': null, 'photo': null};
+    return await _tripService.getDriverPublicInfo(user.id);
   }
 
   Future<void> _cancelTrip(String reason) async {
@@ -284,9 +350,10 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     bool success = true;
     if (_currentTrip.id != 'simulated_trip_123') {
       final driverInfo = await _getDriverInfo();
+      final finalReason = reason.trim().isNotEmpty ? reason.trim() : 'Cancelado por el conductor';
       success = await _tripService.cancelTrip(
         _currentTrip.id!,
-        cancelReason: reason,
+        cancelReason: finalReason,
         nameDriver: driverInfo['name'],
         photoDriver: driverInfo['photo'],
       );
@@ -296,7 +363,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     if (success) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Viaje cancelado')));
-        Navigator.of(context).pop(); // Regresar al home
+        Navigator.of(context).popUntil((route) => route.isFirst); // Regresar al home de forma segura
       }
     } else {
       if (mounted) {
@@ -491,7 +558,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                     child: ElevatedButton(
                       onPressed: () async {
                         Navigator.pop(context);
-                        await _completeTripFinal(finalFare);
+                        await _completeTripFinal(finalFare, passengerRating: rating);
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFC7FF2E),
@@ -511,7 +578,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
-  Future<void> _completeTripFinal(double fare) async {
+  Future<void> _completeTripFinal(double fare, {int passengerRating = 5}) async {
     if (_currentTrip.id == null) return;
     
     setState(() => _isLoading = true);
@@ -524,6 +591,23 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         nameDriver: driverInfo['name'],
         photoDriver: driverInfo['photo'],
       );
+
+      // Guardar calificación al pasajero en Supabase
+      final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+      if (currentUserId != null && _currentTrip.userId.isNotEmpty) {
+        try {
+          final ratingService = RatingService();
+          await ratingService.submitRating(
+            tripId: _currentTrip.id!,
+            reviewerId: currentUserId,
+            targetId: _currentTrip.userId,
+            role: 'passenger',
+            rating: passengerRating.toDouble(),
+          );
+        } catch (e) {
+          debugPrint('Error guardando rating del pasajero: $e');
+        }
+      }
     }
     
     if (success) {
@@ -531,7 +615,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Viaje finalizado con éxito'), backgroundColor: Colors.green),
         );
-        Navigator.of(context).pop(); // Regresa al dashboard
+        Navigator.of(context).popUntil((route) => route.isFirst); // Regresa al dashboard seguro
       }
     } else {
       if (mounted) {
@@ -678,36 +762,93 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
             ),
           ),
           
-          // Panel Inferior con esquinas redondeadas a 40px
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(40)),
-                boxShadow: [
-                  BoxShadow(color: Color(0x29000000), blurRadius: 20, offset: Offset(0, -6)),
-                ],
-              ),
-              child: SafeArea(
-                top: false,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Handle Bar
-                    Center(
-                      child: Container(
-                        width: 44,
-                        height: 5,
-                        margin: const EdgeInsets.only(bottom: 20),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[300],
-                          borderRadius: BorderRadius.circular(10),
+          // Panel Inferior Deslizable
+          DraggableScrollableSheet(
+            initialChildSize: 0.35, // Ocupa el 35% de la pantalla inicialmente
+            minChildSize: 0.20,     // Puede colapsarse hasta el 20%
+            maxChildSize: 0.65,     // Puede expandirse hasta el 65%
+            builder: (context, scrollController) {
+              return Container(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+                  boxShadow: [
+                    BoxShadow(color: Color(0x29000000), blurRadius: 20, offset: Offset(0, -6)),
+                  ],
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: SingleChildScrollView(
+                    controller: scrollController,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Handle Bar
+                        Center(
+                          child: Container(
+                            width: 44,
+                            height: 5,
+                            margin: const EdgeInsets.only(bottom: 20),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[300],
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
                         ),
+
+                    // Tarjeta del Pasajero (Nombre, Foto, Calificación)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      margin: const EdgeInsets.only(bottom: 20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8F9FA),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0x0F000000)),
+                      ),
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 22,
+                            backgroundColor: Colors.grey[200],
+                            backgroundImage: _passengerInfo?['photo'] != null && (_passengerInfo!['photo'] as String).isNotEmpty
+                                ? NetworkImage(_passengerInfo!['photo'])
+                                : null,
+                            child: _passengerInfo?['photo'] == null || (_passengerInfo!['photo'] as String).isEmpty
+                                ? const Icon(Icons.person, color: Colors.black54, size: 26)
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _passengerInfo?['name'] ?? 'Pasajero',
+                                  style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.star, color: Colors.amber, size: 16),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      (_passengerInfo?['rating'] as num?)?.toStringAsFixed(1) ?? '5.0',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      '(${_passengerInfo?['totalRatings'] ?? 0} viajes)',
+                                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
 
@@ -779,6 +920,45 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                     ),
                     const SizedBox(height: 24),
                     
+                    // Temporizador (Solo en 'arrived' - Esperando Pasajero)
+                    if (_currentTrip.status == 'arrived') ...[
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: _remainingSeconds < 60 ? Colors.red.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: _remainingSeconds < 60 ? Colors.red : Colors.orange),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.timer, color: _remainingSeconds < 60 ? Colors.red : Colors.orange, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${(_remainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(_remainingSeconds % 60).toString().padLeft(2, '0')}',
+                                style: TextStyle(
+                                  fontFamily: 'Google Sans',
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: _remainingSeconds < 60 ? Colors.red : Colors.orange[800],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Center(
+                        child: Text(
+                          'Si el pasajero no llega en este tiempo, el viaje se cancelará automáticamente.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontFamily: 'Inter', fontSize: 11, color: Colors.black54),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    
                     // Botones de Contacto (Solo en 'arrived' - Esperando Pasajero)
                     if (_currentTrip.status == 'arrived') ...[
                       Row(
@@ -788,15 +968,19 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                               height: 50,
                               child: ElevatedButton.icon(
                                 onPressed: () async {
-                                  final Uri url = Uri.parse('tel:+1234567890');
-                                  if (await canLaunchUrl(url)) {
-                                    await launchUrl(url);
-                                  } else {
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('No se pudo realizar la llamada.')),
-                                      );
+                                  final messenger = ScaffoldMessenger.of(context);
+                                  final phone = _passengerInfo?['phone'];
+                                  if (phone != null && phone.toString().isNotEmpty) {
+                                    final Uri url = Uri.parse('tel:$phone');
+                                    if (await canLaunchUrl(url)) {
+                                      await launchUrl(url);
+                                      return;
                                     }
+                                  }
+                                  if (mounted) {
+                                    messenger.showSnackBar(
+                                      const SnackBar(content: Text('Número de teléfono del pasajero no disponible.')),
+                                    );
                                   }
                                 },
                                 icon: const Icon(Icons.phone, size: 20),
@@ -926,8 +1110,10 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 ),
               ),
             ),
-          ),
-        ],
+          );
+        },
+      ),
+    ],
       ),
     );
   }

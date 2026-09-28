@@ -245,19 +245,22 @@ class _AdminManagementScreenState extends State<AdminManagementScreen> {
                           ),
                         ],
                       ),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                        leading: const CircleAvatar(
-                          radius: 24,
-                          backgroundColor: Colors.black,
-                          child: Icon(Icons.admin_panel_settings, color: Color(0xFFC7FF2E), size: 24),
-                        ),
-                        title: Text(name, style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16)),
-                        subtitle: Text(email, style: const TextStyle(fontSize: 13, color: Colors.black54)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
-                          tooltip: 'Revocar permisos',
-                          onPressed: () => _revokeAdminRole(userId, name),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                          leading: const CircleAvatar(
+                            radius: 24,
+                            backgroundColor: Colors.black,
+                            child: Icon(Icons.admin_panel_settings, color: Color(0xFFC7FF2E), size: 24),
+                          ),
+                          title: Text(name, style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16)),
+                          subtitle: Text(email, style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
+                            tooltip: 'Revocar permisos',
+                            onPressed: () => _revokeAdminRole(userId, name),
+                          ),
                         ),
                       ),
                     );

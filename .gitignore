@@ -43,4 +43,17 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Variables de entorno y secretos
 lib/env/env.dart
+!lib/env/env.example.dart
+*.env
+.env*
+!.env.example
+
+# Scripts de prueba y archivos temporales con secretos
+test_*.dart
+scratch/
+scratch_*.dart
+*.bak
+

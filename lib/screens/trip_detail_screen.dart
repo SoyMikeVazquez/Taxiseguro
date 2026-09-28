@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/trip.dart';
 import '../services/mapbox_service.dart';
+import '../services/driver_profile_service.dart';
+import '../services/rating_service.dart';
 import '../env/env.dart';
 class TripDetailScreen extends StatefulWidget {
   final Trip trip;
@@ -20,6 +23,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   double _userRating = 5.0;
   final TextEditingController _commentController = TextEditingController();
   bool _hasRated = false;
+  bool _isSubmittingRating = false;
+
+  String _driverName = 'Conductor';
+  String? _driverPhoto;
+  String _vehicleInfo = 'Vehículo no especificado';
+  String? _driverId;
 
   late final LatLng _originCoord;
   late final LatLng _destCoord;
@@ -31,7 +40,115 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     super.initState();
     _originCoord = LatLng(widget.trip.originLat ?? 19.4326, widget.trip.originLng ?? -99.1332);
     _destCoord = LatLng(widget.trip.destinationLat ?? 19.42, widget.trip.destinationLng ?? -99.14);
+    
+    if (widget.trip.nameDriver?.isNotEmpty == true) {
+      _driverName = widget.trip.nameDriver!;
+    }
+    if (widget.trip.photoDriver?.isNotEmpty == true) {
+      _driverPhoto = widget.trip.photoDriver;
+    }
+    _driverId = widget.trip.driverId;
+
     _fetchRoute();
+    _loadDriverAndRatingInfo();
+  }
+
+  Future<void> _loadDriverAndRatingInfo() async {
+    final client = Supabase.instance.client;
+    String? driverId = _driverId;
+
+    // Si driverId no viene en widget.trip, consultar el trip en Supabase
+    if ((driverId == null || driverId.isEmpty) && widget.trip.id != null) {
+      try {
+        final tripData = await client
+            .from('trips')
+            .select('driver_id, name_driver, photo_driver')
+            .eq('id', widget.trip.id!)
+            .maybeSingle();
+        if (tripData != null) {
+          driverId = tripData['driver_id'] as String?;
+          _driverId = driverId;
+          if (tripData['name_driver'] != null && _driverName == 'Conductor') {
+            setState(() {
+              _driverName = tripData['name_driver'] as String;
+            });
+          }
+          if (tripData['photo_driver'] != null && _driverPhoto == null) {
+            setState(() {
+              _driverPhoto = tripData['photo_driver'] as String;
+            });
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Cargar información del conductor y de su vehículo desde public.conductores
+    if (driverId != null && driverId.isNotEmpty) {
+      try {
+        final profile = await DriverProfileService().getDriverProfile(driverId);
+        if (profile != null && mounted) {
+          setState(() {
+            final nComp = profile['nombre_completo'] as String?;
+            final nSimple = profile['nombre'] as String?;
+            if (nComp?.trim().isNotEmpty == true) {
+              _driverName = nComp!.trim();
+            } else if (nSimple?.trim().isNotEmpty == true) {
+              _driverName = nSimple!.trim();
+            }
+
+            final photo = profile['imagen_perfil'] as String?;
+            if (photo != null && photo.isNotEmpty) {
+              _driverPhoto = photo;
+            }
+
+            final modelo = profile['modelo_auto'] as String? ?? profile['modelo'] as String? ?? '';
+            final color = profile['color_auto'] as String? ?? profile['color'] as String? ?? '';
+            final placas = profile['placas'] as String? ?? '';
+
+            final parts = <String>[];
+            if (modelo.isNotEmpty) parts.add(modelo);
+            if (color.isNotEmpty) parts.add(color);
+            String v = parts.join(' • ');
+            if (placas.isNotEmpty) {
+              v = v.isNotEmpty ? '$v ($placas)' : placas;
+            }
+            if (v.isNotEmpty) {
+              _vehicleInfo = v;
+            }
+          });
+        }
+      } catch (e) {
+        debugPrint('Error al cargar datos del conductor: $e');
+      }
+    }
+
+    // Verificar si el usuario ya calificó este viaje (usando la nueva columna isReview o consultando la tabla ratings)
+    final currentUserId = client.auth.currentUser?.id;
+    if (currentUserId != null && widget.trip.id != null) {
+      // Si el flag isReview es true, bloqueamos inmediatamente
+      if (widget.trip.isReview == true && mounted) {
+        setState(() {
+          _hasRated = true;
+        });
+      }
+
+      try {
+        final ratingService = RatingService();
+        final r = await ratingService.getTripRating(
+          tripId: widget.trip.id!,
+          reviewerId: currentUserId,
+        );
+        if (r != null && mounted) {
+          setState(() {
+            _hasRated = true;
+            _userRating = (r['rating'] as num?)?.toDouble() ?? 5.0;
+            if (r['comment'] != null && r['comment'].toString().isNotEmpty) {
+              _commentController.text = r['comment'].toString();
+            }
+          });
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _fetchRoute() async {
@@ -72,24 +189,75 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return months[month - 1];
   }
 
-  void _submitRating() {
-    setState(() {
-      _hasRated = true;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('¡Gracias por calificar a tu conductor!'),
-        backgroundColor: Colors.green,
-        behavior: SnackBarBehavior.floating,
-      ),
+  Future<void> _submitRating() async {
+    final client = Supabase.instance.client;
+    final currentUserId = client.auth.currentUser?.id;
+    if (currentUserId == null || widget.trip.id == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error: Inicia sesión para calificar.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final targetDriverId = _driverId ?? widget.trip.driverId;
+    if (targetDriverId == null || targetDriverId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay conductor asignado a este viaje.'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+
+    setState(() => _isSubmittingRating = true);
+
+    final ratingService = RatingService();
+    final success = await ratingService.submitRating(
+      tripId: widget.trip.id!,
+      reviewerId: currentUserId,
+      targetId: targetDriverId,
+      role: 'driver',
+      rating: _userRating,
+      comment: _commentController.text,
     );
+
+    if (success) {
+      try {
+        await client.from('trips').update({'isReview': true}).eq('id', widget.trip.id!);
+      } catch (e) {
+        debugPrint('Error actualizando isReview: $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isSubmittingRating = false;
+        if (success) _hasRated = true;
+      });
+
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('¡Gracias por calificar a tu conductor!'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error al enviar la calificación. Intenta de nuevo.'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final totalFare = widget.trip.fare ?? 120.0;
-    final baseFare = totalFare * 0.85;
-    final taxes = totalFare * 0.15;
+    final baseFare = totalFare * 0.80;
+    final taxes = totalFare * 0.20;
     final pm = widget.trip.paymentMethod ?? 'efectivo';
     final paymentMethodDisplay = pm.isNotEmpty ? '${pm[0].toUpperCase()}${pm.substring(1)}' : 'Efectivo';
 
@@ -183,10 +351,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             CircleAvatar(
                               radius: 28,
                               backgroundColor: Colors.grey[200],
-                              backgroundImage: widget.trip.photoDriver != null && widget.trip.photoDriver!.isNotEmpty
-                                  ? NetworkImage(widget.trip.photoDriver!)
+                              backgroundImage: _driverPhoto != null && _driverPhoto!.isNotEmpty
+                                  ? NetworkImage(_driverPhoto!)
                                   : null,
-                              child: widget.trip.photoDriver == null || widget.trip.photoDriver!.isEmpty
+                              child: _driverPhoto == null || _driverPhoto!.isEmpty
                                   ? const Icon(Icons.person, size: 36, color: Colors.black54)
                                   : null,
                             ),
@@ -196,9 +364,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    widget.trip.nameDriver?.isNotEmpty == true
-                                        ? widget.trip.nameDriver!
-                                        : 'Conductor',
+                                    _driverName,
                                     style: const TextStyle(
                                       fontSize: 17,
                                       fontWeight: FontWeight.bold,
@@ -206,7 +372,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    'Nissan Versa • Blanco (XYZ-8921)',
+                                    _vehicleInfo,
                                     style: TextStyle(
                                       fontSize: 13,
                                       color: Colors.grey[600],
@@ -331,7 +497,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             width: double.infinity,
                             height: 56,
                             child: ElevatedButton(
-                              onPressed: _submitRating,
+                              onPressed: _isSubmittingRating ? null : _submitRating,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFFC7FF2E), // Electric Green
                                 foregroundColor: Colors.black,
@@ -340,18 +506,37 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 ),
                                 elevation: 0,
                               ),
-                              child: const Text('Enviar Calificación', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold)),
+                              child: _isSubmittingRating
+                                  ? const SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                                    )
+                                  : const Text('Enviar Calificación', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold)),
                             ),
                           ),
                         ] else
-                          const Center(
-                            child: Padding(
-                              padding: EdgeInsets.symmetric(vertical: 8.0),
-                              child: Text(
-                                '✓ Calificación enviada',
-                                style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                          Column(
+                            children: [
+                              const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                                  child: Text(
+                                    '✓ Calificación registrada',
+                                    style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15),
+                                  ),
+                                ),
                               ),
-                            ),
+                              if (_commentController.text.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 2.0),
+                                  child: Text(
+                                    '"${_commentController.text}"',
+                                    style: TextStyle(color: Colors.grey[700], fontStyle: FontStyle.italic, fontSize: 13),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                            ],
                           ),
                       ],
                     ),

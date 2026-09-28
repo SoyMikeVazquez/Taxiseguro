@@ -1,7 +1,6 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../auth_screen.dart';
+import '../../env/env.dart';
 import '../driver_onboarding_screen.dart';
 
 class AdminDriverRegistrationScreen extends StatefulWidget {
@@ -45,8 +44,8 @@ class _AdminDriverRegistrationScreenState extends State<AdminDriverRegistrationS
     try {
       // Crear cliente aislado para no afectar la sesión del admin
       final isolatedClient = SupabaseClient(
-        'https://viqmzyevsvdzddmukfev.supabase.co',
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpcW16eWV2c3ZkemRkbXVrZmV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMTIxNjgsImV4cCI6MjA5Nzg4ODE2OH0.H40ahS2NmlgD1yCjCVf-i8TXTGHE6oBKvHBwl8OqbCA',
+        Env.supabaseUrl,
+        Env.supabaseAnonKey,
         authOptions: const AuthClientOptions(
           authFlowType: AuthFlowType.implicit,
         ),
@@ -86,7 +85,7 @@ class _AdminDriverRegistrationScreenState extends State<AdminDriverRegistrationS
         try {
           await isolatedClient.from('conductores').insert(driverData);
         } catch (driverError) {
-          print('Error al insertar en conductores: $driverError');
+          debugPrint('Error al insertar en conductores: $driverError');
         }
       }
 
@@ -161,7 +160,7 @@ class _AdminDriverRegistrationScreenState extends State<AdminDriverRegistrationS
           style: const TextStyle(fontSize: 15),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: TextStyle(color: Colors.black.withOpacity(0.35)),
+            hintStyle: TextStyle(color: Colors.black.withValues(alpha: 0.35)),
             filled: true,
             fillColor: const Color(0xFFF3F3F3),
             contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),

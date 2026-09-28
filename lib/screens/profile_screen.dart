@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
+import '../services/rating_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final bool showBackButton;
@@ -85,22 +86,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       // Intentar cargar la calificación promedio desde la tabla 'ratings'
       try {
-        final ratingsResponse = await _supabase
-            .from('ratings')
-            .select('rating')
-            .eq('receiver_id', user.id);
-            
-        final ratingsList = ratingsResponse as List<dynamic>;
-        if (ratingsList.isNotEmpty) {
-          double sum = 0;
-          for (var r in ratingsList) {
-            sum += (r['rating'] as num).toDouble();
-          }
-          if (mounted) {
-            setState(() {
-              _userRating = sum / ratingsList.length;
-            });
-          }
+        final ratingService = RatingService();
+        final stats = await ratingService.getUserRatingStats(user.id);
+        if (mounted) {
+          setState(() {
+            _userRating = stats['average'] as double;
+          });
         }
       } catch (e) {
         print('Error al cargar ratings: $e');

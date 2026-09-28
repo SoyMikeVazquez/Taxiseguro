@@ -36,16 +36,36 @@ class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
   }
 
   List<Map<String, dynamic>> get _filteredDrivers {
-    if (_selectedFilter == 'todos') return _drivers;
-    return _drivers.where((d) {
-      final status = (d['estatus'] ?? '').toString().toLowerCase();
-      final aprobacion = (d['Aprobación'] ?? d['Aprobacion'] ?? d['aprobacion'] ?? '').toString().toLowerCase();
+    List<Map<String, dynamic>> list;
+    if (_selectedFilter == 'todos') {
+      list = List<Map<String, dynamic>>.from(_drivers);
+    } else {
+      list = _drivers.where((d) {
+        final isActivo = d['isActivo'] == true;
+        final aprobacion = (d['Aprobación'] ?? d['Aprobacion'] ?? d['aprobacion'] ?? '').toString().toLowerCase().trim();
 
-      if (_selectedFilter == 'activos') return status == 'activo' || aprobacion == 'aprobado';
-      if (_selectedFilter == 'pendientes') return aprobacion == 'pendiente';
-      if (_selectedFilter == 'inactivos') return status == 'inactivo' && aprobacion != 'pendiente';
-      return true;
-    }).toList();
+        if (_selectedFilter == 'activos') return isActivo;
+        if (_selectedFilter == 'pendientes') return aprobacion == 'pendiente';
+        if (_selectedFilter == 'inactivos') return !isActivo && aprobacion != 'pendiente';
+        return true;
+      }).toList();
+    }
+
+    // Ordenar: primero los activos y después los no activos, luego alfabéticamente
+    list.sort((a, b) {
+      final aActive = a['isActivo'] == true;
+      final bActive = b['isActivo'] == true;
+      
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+
+      // Si ambos tienen el mismo estado, ordenamos alfabéticamente
+      final nameA = (a['nombre_completo'] ?? a['nombre'] ?? 'Conductor').toString().toLowerCase();
+      final nameB = (b['nombre_completo'] ?? b['nombre'] ?? 'Conductor').toString().toLowerCase();
+      return nameA.compareTo(nameB);
+    });
+
+    return list;
   }
 
   @override
@@ -61,20 +81,42 @@ class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
           'Monitor de Conductores',
           style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, color: Colors.black),
         ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () => Navigator.pop(context),
+        leadingWidth: 70,
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 16.0, top: 8, bottom: 8),
+          child: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.black, size: 22),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.grey.shade100,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => Navigator.pop(context),
+          ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.person_add, color: Colors.black),
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminDriverRegistrationScreen()));
-            },
+          Padding(
+            padding: const EdgeInsets.only(right: 8.0, top: 8, bottom: 8),
+            child: IconButton(
+              icon: const Icon(Icons.person_add, color: Colors.black, size: 22),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.grey.shade100,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminDriverRegistrationScreen()));
+              },
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.black),
-            onPressed: _loadDrivers,
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0, top: 8, bottom: 8),
+            child: IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.black, size: 22),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.grey.shade100,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: _loadDrivers,
+            ),
           ),
         ],
       ),
@@ -114,7 +156,7 @@ class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
                             final estatus = (driver['estatus'] ?? 'inactivo').toString().toLowerCase();
                             final aprobacion = (driver['Aprobación'] ?? driver['Aprobacion'] ?? driver['aprobacion'] ?? '').toString();
 
-                            final bool isAct = estatus == 'activo';
+                            final bool isAct = driver['isActivo'] == true;
                             final bool isPend = aprobacion.toLowerCase() == 'pendiente';
 
                             return Container(
@@ -130,60 +172,63 @@ class _AdminDriversMonitorScreenState extends State<AdminDriversMonitorScreen> {
                                   ),
                                 ],
                               ),
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                                leading: Container(
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: isAct
-                                        ? const Color(0xFFC7FF2E).withValues(alpha: 0.2)
-                                        : isPend
-                                            ? Colors.amber.withValues(alpha: 0.2)
-                                            : Colors.grey.shade200,
-                                    shape: BoxShape.circle,
+                              child: Material(
+                                color: Colors.transparent,
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                                  leading: Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: isAct
+                                          ? const Color(0xFFC7FF2E).withValues(alpha: 0.2)
+                                          : isPend
+                                              ? Colors.amber.withValues(alpha: 0.2)
+                                              : Colors.grey.shade200,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(
+                                      Icons.local_taxi,
+                                      color: isAct ? Colors.black : isPend ? Colors.amber.shade900 : Colors.grey,
+                                    ),
                                   ),
-                                  child: Icon(
-                                    Icons.local_taxi,
-                                    color: isAct ? Colors.black : isPend ? Colors.amber.shade900 : Colors.grey,
+                                  title: Text(
+                                    name,
+                                    style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
                                   ),
-                                ),
-                                title: Text(
-                                  name,
-                                  style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
-                                ),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('$auto • $phone', style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                                    const SizedBox(height: 4),
-                                    Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                          decoration: BoxDecoration(
-                                            color: isAct ? Colors.green.shade100 : isPend ? Colors.amber.shade100 : Colors.grey.shade200,
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: Text(
-                                            isAct ? 'ACTIVO' : isPend ? 'PENDIENTE' : 'INACTIVO',
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: isAct ? Colors.green.shade900 : isPend ? Colors.amber.shade900 : Colors.grey.shade800,
+                                  subtitle: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text('$auto • $phone', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: isAct ? Colors.green.shade100 : isPend ? Colors.amber.shade100 : Colors.grey.shade200,
+                                              borderRadius: BorderRadius.circular(10),
+                                            ),
+                                            child: Text(
+                                              isAct ? 'ACTIVO' : isPend ? 'PENDIENTE' : 'INACTIVO',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: isAct ? Colors.green.shade900 : isPend ? Colors.amber.shade900 : Colors.grey.shade800,
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.black38),
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(builder: (_) => AdminDriverDetailScreen(driver: driver)),
+                                    ).then((_) => _loadDrivers());
+                                  },
                                 ),
-                                trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.black38),
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(builder: (_) => AdminDriverDetailScreen(driver: driver)),
-                                  );
-                                },
                               ),
                             ).animate().fade(duration: 300.ms, delay: (index * 40).ms).slideY(begin: 0.05, end: 0);
                           },
