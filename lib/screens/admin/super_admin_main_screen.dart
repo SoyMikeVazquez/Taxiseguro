@@ -11,6 +11,7 @@ import 'admin_approvals_screen.dart';
 import 'admin_trips_history_screen.dart';
 import 'admin_cutoff_dates_screen.dart';
 import 'admin_ads_screen.dart';
+import 'admin_mass_email_screen.dart';
 import '../../widgets/admin/dashboard_revenue_card.dart';
 
 class SuperAdminMainScreen extends StatefulWidget {
@@ -352,6 +353,15 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                       icon: Icons.campaign_outlined,
                       badge: 'Ads',
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminAdsScreen())),
+                    ),
+
+                    // 9. Difusión de Correos Masivos (Brevo)
+                    _buildModuleTile(
+                      title: '9. Difusión de Correos Masivos',
+                      subtitle: 'Enviar comunicados por email a usuarios o conductores con Brevo',
+                      icon: Icons.mark_email_read_outlined,
+                      badge: 'Brevo',
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminMassEmailScreen())),
                     ),
                   ],
                 ),
