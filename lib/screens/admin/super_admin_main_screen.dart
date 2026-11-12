@@ -12,6 +12,7 @@ import 'admin_trips_history_screen.dart';
 import 'admin_cutoff_dates_screen.dart';
 import 'admin_ads_screen.dart';
 import 'admin_mass_email_screen.dart';
+import 'admin_pricing_config_screen.dart';
 import '../../widgets/admin/dashboard_revenue_card.dart';
 
 class SuperAdminMainScreen extends StatefulWidget {
@@ -362,6 +363,15 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                       icon: Icons.mark_email_read_outlined,
                       badge: 'Brevo',
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminMassEmailScreen())),
+                    ),
+
+                    // 10. Configuración de Tarifas y Tabulador
+                    _buildModuleTile(
+                      title: '10. Configuración de Tarifas y Tabulador',
+                      subtitle: 'Gestionar tabulador por KM, modo manual vs dinámico y mapas de calor',
+                      icon: Icons.price_change_outlined,
+                      badge: 'Tarifas',
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminPricingConfigScreen())),
                     ),
                   ],
                 ),

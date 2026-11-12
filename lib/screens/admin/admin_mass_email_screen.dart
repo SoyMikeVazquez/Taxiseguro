@@ -55,61 +55,64 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     final supabase = Supabase.instance.client;
 
     try {
-      // 1. Cargar info de Brevo
-      final accountInfo = await BrevoService.getAccountInfo();
-
-      // 2. Cargar usuarios (pasajeros) con correo válido
+      // 1. Cargar usuarios / pasajeros (que tengan correo válido)
       final usersRes = await supabase
           .from('users')
-          .select('nombre, correo')
-          .not('correo', 'is', null);
+          .select('email, nombre, apellido, phone_number')
+          .not('email', 'is', null);
 
-      final List<BrevoRecipient> loadedPassengers = [];
-      final Set<String> passengerEmails = {};
-      for (var u in usersRes) {
-        final email = (u['correo'] ?? '').toString().trim();
-        final name = (u['nombre'] ?? 'Pasajero').toString().trim();
-        if (_isValidEmail(email) && !passengerEmails.contains(email.toLowerCase())) {
-          passengerEmails.add(email.toLowerCase());
-          loadedPassengers.add(BrevoRecipient(email: email, name: name.isNotEmpty ? name : 'Pasajero'));
+      final List<BrevoRecipient> passList = [];
+      for (var item in (usersRes as List<dynamic>)) {
+        final email = (item['email'] as String?)?.trim();
+        if (email != null && _isValidEmail(email)) {
+          final nombre = (item['nombre'] as String?) ?? '';
+          final apellido = (item['apellido'] as String?) ?? '';
+          final fullName = '$nombre $apellido'.trim();
+          passList.add(BrevoRecipient(email: email, name: fullName.isNotEmpty ? fullName : 'Usuario'));
         }
       }
 
-      // 3. Cargar conductores con correo válido
+      // 2. Cargar conductores (que tengan correo válido)
       final driversRes = await supabase
           .from('conductores')
-          .select('nombre, nombre_completo, correo')
+          .select('correo, nombre, telefono')
           .not('correo', 'is', null);
 
-      final List<BrevoRecipient> loadedDrivers = [];
-      final Set<String> driverEmails = {};
-      for (var d in driversRes) {
-        final email = (d['correo'] ?? '').toString().trim();
-        final name = (d['nombre_completo'] ?? d['nombre'] ?? 'Conductor').toString().trim();
-        if (_isValidEmail(email) && !driverEmails.contains(email.toLowerCase())) {
-          driverEmails.add(email.toLowerCase());
-          loadedDrivers.add(BrevoRecipient(email: email, name: name.isNotEmpty ? name : 'Conductor'));
+      final List<BrevoRecipient> drivList = [];
+      for (var item in (driversRes as List<dynamic>)) {
+        final email = (item['correo'] as String?)?.trim();
+        if (email != null && _isValidEmail(email)) {
+          final nombre = (item['nombre'] as String?)?.trim();
+          drivList.add(BrevoRecipient(email: email, name: (nombre != null && nombre.isNotEmpty) ? nombre : 'Conductor'));
         }
       }
+
+      // 3. Consultar cuenta en Brevo (créditos disponibles)
+      final accountInfo = await BrevoService.getAccountInfo();
 
       if (mounted) {
         setState(() {
+          _passengers = passList;
+          _drivers = drivList;
           _brevoAccountInfo = accountInfo;
-          _passengers = loadedPassengers;
-          _drivers = loadedDrivers;
           _isLoadingData = false;
         });
       }
     } catch (e) {
-      print('Error cargando destinatarios para Brevo: $e');
       if (mounted) {
         setState(() => _isLoadingData = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error cargando listas de correo: $e'),
+            backgroundColor: Colors.black87,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     }
   }
 
   bool _isValidEmail(String email) {
-    if (email.isEmpty) return false;
     final regex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
     return regex.hasMatch(email);
   }
@@ -121,7 +124,6 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
       case EmailAudience.drivers:
         return _drivers;
       case EmailAudience.all:
-        // Combinar evitando correos duplicados
         final Map<String, BrevoRecipient> all = {};
         for (var p in _passengers) {
           all[p.email.toLowerCase()] = p;
@@ -175,21 +177,34 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
         child: Container(
           constraints: const BoxConstraints(maxWidth: 520),
           decoration: BoxDecoration(
-            color: const Color(0xFFF3F4F6),
+            color: Colors.white,
             borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.grey.shade200),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.15),
+                blurRadius: 24,
+                offset: const Offset(0, 8),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Barra superior modal
-              Padding(
+              // Barra superior del preview
+              Container(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                  border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+                ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Row(
                       children: [
-                        Icon(Icons.visibility, size: 20, color: Colors.black87),
+                        Icon(Icons.visibility_outlined, size: 20, color: Colors.black),
                         SizedBox(width: 8),
                         Text(
                           'Vista Previa del Correo',
@@ -198,69 +213,55 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                       ],
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close),
+                      icon: const Icon(Icons.close, size: 20, color: Colors.black54),
                       onPressed: () => Navigator.pop(ctx),
-                      visualDensity: VisualDensity.compact,
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1),
 
-              // Contenido simulado del email
+              // Cuerpo simulado del email (Diseño oficial limpio)
               Flexible(
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(20),
                   child: Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.shade200),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.05),
-                          blurRadius: 15,
-                          offset: const Offset(0, 4),
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
                         ),
                       ],
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Header del correo
+                        // Cabecera oscura
                         Container(
-                          padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                          padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
                           decoration: const BoxDecoration(
-                            color: Color(0xFF121212),
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                            color: Colors.black,
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(15)),
                           ),
-                          child: Column(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFC7FF2E),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: const Text(
-                                  'TAXISEGURO',
-                                  style: TextStyle(
-                                    fontFamily: 'Google Sans',
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 18,
-                                    color: Colors.black,
-                                  ),
-                                ),
+                          child: const Center(
+                            child: Text(
+                              'TAXISEGURO',
+                              style: TextStyle(
+                                fontFamily: 'Google Sans',
+                                fontWeight: FontWeight.w900,
+                                fontSize: 20,
+                                letterSpacing: 2.0,
+                                color: Colors.white,
                               ),
-                              const SizedBox(height: 6),
-                              const Text(
-                                'Tu viaje confiable y seguro',
-                                style: TextStyle(fontSize: 12, color: Colors.white70),
-                              ),
-                            ],
+                            ),
                           ),
                         ),
 
-                        // Cuerpo
+                        // Contenido
                         Padding(
                           padding: const EdgeInsets.all(24),
                           child: Column(
@@ -270,49 +271,44 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                                 title,
                                 style: const TextStyle(
                                   fontFamily: 'Google Sans',
-                                  fontSize: 20,
+                                  fontSize: 18,
                                   fontWeight: FontWeight.bold,
-                                  color: Colors.black87,
+                                  color: Colors.black,
                                 ),
                               ),
                               const SizedBox(height: 14),
-                              const Text(
-                                'Hola [Nombre del Destinatario],',
-                                style: TextStyle(fontFamily: 'Inter', fontSize: 14, color: Colors.black54),
-                              ),
-                              const SizedBox(height: 12),
                               Text(
                                 message,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontFamily: 'Inter',
                                   fontSize: 14,
-                                  color: Colors.black87,
-                                  height: 1.5,
+                                  color: Colors.grey.shade800,
+                                  height: 1.6,
                                 ),
                               ),
                               if (ctaText != null && ctaText.isNotEmpty) ...[
                                 const SizedBox(height: 24),
                                 Center(
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFC7FF2E),
-                                      borderRadius: BorderRadius.circular(25),
+                                      color: Colors.black,
+                                      borderRadius: BorderRadius.circular(20),
                                     ),
                                     child: Text(
                                       ctaText,
                                       style: const TextStyle(
                                         fontFamily: 'Google Sans',
                                         fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                        color: Colors.black,
+                                        fontSize: 13,
+                                        color: Colors.white,
                                       ),
                                     ),
                                   ),
                                 ),
                               ],
                               const SizedBox(height: 24),
-                              const Divider(),
+                              Divider(color: Colors.grey.shade200),
                               const SizedBox(height: 8),
                               const Center(
                                 child: Text(
@@ -335,14 +331,16 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                 padding: const EdgeInsets.all(16),
                 child: SizedBox(
                   width: double.infinity,
+                  height: 46,
                   child: ElevatedButton(
                     onPressed: () => Navigator.pop(ctx),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black,
                       foregroundColor: Colors.white,
+                      elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     ),
-                    child: const Text('Entendido'),
+                    child: const Text('Entendido', style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ),
               ),
@@ -361,7 +359,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('No hay destinatarios válidos para la audiencia seleccionada.'),
-          backgroundColor: Colors.redAccent,
+          backgroundColor: Colors.black87,
+          behavior: SnackBarBehavior.floating,
         ),
       );
       return;
@@ -378,40 +377,45 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Row(
           children: [
             Icon(Icons.send_rounded, color: Colors.black87),
-            SizedBox(width: 8),
-            Text('¿Confirmar Envío Masivo?'),
+            SizedBox(width: 10),
+            Text('¿Confirmar Envío Masivo?', style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 18)),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Estás a punto de enviar un correo oficial a través de la API de Brevo a:'),
+            const Text(
+              'Estás a punto de enviar un correo oficial a través de la API de Brevo a:',
+              style: TextStyle(fontFamily: 'Inter', fontSize: 13, color: Colors.black87),
+            ),
             const SizedBox(height: 12),
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFF3F4F6),
-                borderRadius: BorderRadius.circular(12),
+                color: const Color(0xFFF9FAFB),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.grey.shade200),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('• Audiencia: $audienceLabel', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 4),
-                  Text('• Total de correos: ${recipients.length}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 13)),
+                  Text('• Total de correos: ${recipients.length}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 13)),
                   const SizedBox(height: 4),
-                  Text('• Remitente: admin@taxiseguro.net', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                  const Text('• Remitente: admin@taxiseguro.net', style: TextStyle(fontSize: 12, color: Colors.black54)),
                 ],
               ),
             ),
             const SizedBox(height: 12),
             const Text(
-              'Cada usuario recibirá un correo individual y privado con el diseño oficial de TaxiSeguro.',
+              'Cada usuario recibirá un correo individual y privado con el formato oficial de TaxiSeguro.',
               style: TextStyle(fontSize: 12, color: Colors.black54),
             ),
           ],
@@ -419,13 +423,14 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar', style: TextStyle(color: Colors.black54)),
+            child: const Text('Cancelar', style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w600)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFC7FF2E),
-              foregroundColor: Colors.black,
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+              elevation: 0,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             child: const Text('Sí, Enviar Ahora', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -462,33 +467,40 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (progressCtx) => StatefulBuilder(
-        builder: (context, setProgressState) {
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
           final progress = _sendProgressTotal > 0 ? (_sendProgressCurrent / _sendProgressTotal) : 0.0;
           return AlertDialog(
+            backgroundColor: Colors.white,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: const Text('Enviando Correos...', style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold)),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LinearProgressIndicator(
-                  value: progress,
-                  backgroundColor: Colors.grey[200],
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFC7FF2E)),
-                  minHeight: 10,
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Enviando $_sendProgressCurrent de $_sendProgressTotal correos...',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Por favor no cierres esta pantalla.',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
-              ],
+            content: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Colors.black),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Enviando Correos con Brevo...',
+                    style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$_sendProgressCurrent de $_sendProgressTotal procesados',
+                    style: const TextStyle(fontFamily: 'Inter', fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.black),
+                      minHeight: 8,
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         },
@@ -516,15 +528,13 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Row(
+          title: const Row(
             children: [
-              Icon(
-                result.failedCount == 0 ? Icons.check_circle : Icons.warning_amber_rounded,
-                color: result.failedCount == 0 ? Colors.green : Colors.orange,
-              ),
-              const SizedBox(width: 8),
-              const Text('Resumen del Envío'),
+              Icon(Icons.check_circle_outline, color: Colors.black87),
+              SizedBox(width: 8),
+              Text('Resumen del Envío', style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 18)),
             ],
           ),
           content: Column(
@@ -535,14 +545,15 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                 result.failedCount == 0
                     ? '¡Todos los correos fueron enviados con éxito a través de Brevo!'
                     : 'El proceso terminó con algunos envíos pendientes.',
-                style: const TextStyle(fontSize: 14),
+                style: const TextStyle(fontSize: 14, fontFamily: 'Inter'),
               ),
               const SizedBox(height: 14),
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF3F4F6),
-                  borderRadius: BorderRadius.circular(12),
+                  color: const Color(0xFFF9FAFB),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.grey.shade200),
                 ),
                 child: Column(
                   children: [
@@ -550,7 +561,7 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text('Enviados con éxito:'),
-                        Text('${result.sentCount}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                        Text('${result.sentCount}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
                       ],
                     ),
                     if (result.failedCount > 0) ...[
@@ -559,7 +570,7 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text('Fallidos:'),
-                          Text('${result.failedCount}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                          Text('${result.failedCount}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
                         ],
                       ),
                     ],
@@ -577,9 +588,10 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.black,
                 foregroundColor: Colors.white,
+                elevation: 0,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              child: const Text('Aceptar'),
+              child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -592,13 +604,17 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     final currentList = _currentRecipients;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF9F9F9),
+      backgroundColor: const Color(0xFFF9FAFB),
       appBar: AppBar(
         backgroundColor: Colors.white,
-        elevation: 0.5,
+        elevation: 0,
         title: const Text(
           'Correos Masivos (Brevo)',
           style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, color: Colors.black, fontSize: 18),
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(color: Colors.grey.shade200, height: 1),
         ),
         leadingWidth: 70,
         leading: Padding(
@@ -606,8 +622,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
           child: IconButton(
             icon: const Icon(Icons.arrow_back, color: Colors.black, size: 22),
             style: IconButton.styleFrom(
-              backgroundColor: Colors.grey.shade100,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              backgroundColor: const Color(0xFFF9FAFB),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
             ),
             onPressed: () => Navigator.pop(context),
           ),
@@ -619,8 +635,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               icon: const Icon(Icons.refresh, color: Colors.black, size: 22),
               tooltip: 'Recargar datos',
               style: IconButton.styleFrom(
-                backgroundColor: Colors.grey.shade100,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                backgroundColor: const Color(0xFFF9FAFB),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
               ),
               onPressed: _loadRecipientsAndAccount,
             ),
@@ -632,9 +648,9 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
           : Form(
               key: _formKey,
               child: ListView(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(18),
                 children: [
-                  // 1. Tarjeta informativa de Brevo
+                  // 1. Tarjeta informativa de Brevo Minimalista
                   _buildBrevoStatusCard(),
 
                   const SizedBox(height: 18),
@@ -664,26 +680,39 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                           label: const Text('Vista Previa', style: TextStyle(fontFamily: 'Inter', fontWeight: FontWeight.bold, color: Colors.black87)),
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 16),
-                            side: const BorderSide(color: Colors.black26),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                            side: BorderSide(color: Colors.grey.shade300),
+                            backgroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                           ),
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         flex: 2,
-                        child: ElevatedButton.icon(
-                          onPressed: _isSending ? null : _confirmAndSend,
-                          icon: const Icon(Icons.send_rounded, size: 18, color: Colors.black),
-                          label: Text(
-                            'Enviar (${currentList.length})',
-                            style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.15),
+                                blurRadius: 14,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
                           ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFC7FF2E), // Electric Green
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-                            elevation: 0,
+                          child: ElevatedButton.icon(
+                            onPressed: _isSending ? null : _confirmAndSend,
+                            icon: const Icon(Icons.send_rounded, size: 18, color: Colors.white),
+                            label: Text(
+                              'Enviar (${currentList.length})',
+                              style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              elevation: 0,
+                            ),
                           ),
                         ),
                       ),
@@ -707,14 +736,15 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     } catch (_) {}
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
             offset: const Offset(0, 4),
           ),
         ],
@@ -724,10 +754,11 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFFC7FF2E).withValues(alpha: 0.25),
+              color: const Color(0xFFF3F4F6),
               shape: BoxShape.circle,
+              border: Border.all(color: Colors.grey.shade200),
             ),
-            child: const Icon(Icons.mark_email_read, color: Colors.black87, size: 24),
+            child: const Icon(Icons.mark_email_read_outlined, color: Colors.black87, size: 24),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -738,25 +769,25 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                   children: [
                     const Text(
                       'API de Brevo Conectada',
-                      style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 14),
+                      style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 8),
                     Container(
                       width: 8,
                       height: 8,
-                      decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                      decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
                     ),
                   ],
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 const Text(
                   'Remitente: admin@taxiseguro.net',
                   style: TextStyle(fontFamily: 'Inter', fontSize: 12, color: Colors.black54),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 Text(
                   'Créditos disponibles hoy: $remainingCredits correos',
-                  style: const TextStyle(fontFamily: 'Inter', fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF047857)),
+                  style: const TextStyle(fontFamily: 'Inter', fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black87),
                 ),
               ],
             ),
@@ -771,11 +802,12 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
             offset: const Offset(0, 4),
           ),
         ],
@@ -785,15 +817,15 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
         children: [
           const Row(
             children: [
-              Icon(Icons.group_outlined, size: 20, color: Colors.black87),
+              Icon(Icons.group_outlined, size: 20, color: Colors.black),
               SizedBox(width: 8),
               Text(
                 'Selecciona la Audiencia',
-                style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15),
+                style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -813,9 +845,11 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                 labelText: 'Correo electrónico para prueba',
                 hintText: 'ej: admin@taxiseguro.net',
                 filled: true,
-                fillColor: const Color(0xFFF3F4F6),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-                prefixIcon: const Icon(Icons.email_outlined),
+                fillColor: const Color(0xFFF9FAFB),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.black, width: 1.5)),
+                prefixIcon: const Icon(Icons.email_outlined, color: Colors.black87),
               ),
               onChanged: (_) => setState(() {}),
               validator: (val) {
@@ -836,18 +870,28 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     final isSelected = _selectedAudience == audience;
     return InkWell(
       onTap: () => setState(() => _selectedAudience = audience),
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(14),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
+        duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.black : const Color(0xFFF3F4F6),
-          borderRadius: BorderRadius.circular(16),
+          color: isSelected ? Colors.black : const Color(0xFFF9FAFB),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: isSelected ? Colors.black : Colors.grey.shade200),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 16, color: isSelected ? const Color(0xFFC7FF2E) : Colors.black87),
+            Icon(icon, size: 16, color: isSelected ? Colors.white : Colors.black87),
             const SizedBox(width: 6),
             Text(
               label,
@@ -868,11 +912,11 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 8),
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
           child: Text(
             'Plantillas Rápidas',
-            style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black54),
+            style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey.shade700),
           ),
         ),
         SingleChildScrollView(
@@ -880,7 +924,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
           child: Row(
             children: [
               _buildTemplateChip(
-                '📢 Comunicado Oficial',
+                Icons.campaign_outlined,
+                'Comunicado Oficial',
                 () => _applyTemplate(
                   subject: 'Información Importante de TaxiSeguro',
                   message: 'Estimado miembro de nuestra comunidad,\n\nQueremos informarte sobre las nuevas actualizaciones y mejoras operativas en la plataforma TaxiSeguro pensadas para brindarte un servicio más ágil, seguro y confiable.',
@@ -890,7 +935,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               ),
               const SizedBox(width: 8),
               _buildTemplateChip(
-                '🎁 Promoción Viajes',
+                Icons.local_offer_outlined,
+                'Promoción Viajes',
                 () => _applyTemplate(
                   subject: '¡Viaja con Descuento este Fin de Semana!',
                   message: '¡Aprovecha grandes beneficios!\n\nEste fin de semana disfruta de tus traslados con tarifa preferencial en TaxiSeguro. Solo abre la aplicación, solicita tu viaje y viaja con total seguridad y comodidad.',
@@ -900,7 +946,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               ),
               const SizedBox(width: 8),
               _buildTemplateChip(
-                '🚕 Aviso a Conductores',
+                Icons.local_taxi_outlined,
+                'Aviso Conductores',
                 () => _applyTemplate(
                   subject: 'Recordatorio de Fechas de Corte y Bonificaciones',
                   message: 'Estimado conductor aliado,\n\nTe recordamos que la próxima fecha de corte de la plataforma se llevará a cabo puntualmente. Asegúrate de tener tus viajes debidamente cerrados en la app para recibir tus pagos y comisiones en tiempo y forma.',
@@ -910,7 +957,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               ),
               const SizedBox(width: 8),
               _buildTemplateChip(
-                '🛠️ Mantenimiento',
+                Icons.build_outlined,
+                'Mantenimiento',
                 () => _applyTemplate(
                   subject: 'Mantenimiento Programado de la Plataforma',
                   message: 'Aviso importante:\n\nEstaremos realizando labores de optimización y mantenimiento en nuestros servidores para mejorar la velocidad y estabilidad del servicio. Agradecemos tu comprensión.',
@@ -918,7 +966,8 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
               ),
               const SizedBox(width: 8),
               _buildTemplateChip(
-                '✏️ En Blanco',
+                Icons.edit_note_outlined,
+                'En Blanco',
                 () => _applyTemplate(subject: '', message: ''),
               ),
             ],
@@ -928,20 +977,34 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
     );
   }
 
-  Widget _buildTemplateChip(String label, VoidCallback onTap) {
+  Widget _buildTemplateChip(IconData icon, String label, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade300),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade200),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
-        child: Text(
-          label,
-          style: const TextStyle(fontFamily: 'Inter', fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.black87),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: Colors.black87),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(fontFamily: 'Inter', fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black87),
+            ),
+          ],
         ),
       ),
     );
@@ -952,11 +1015,12 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
             offset: const Offset(0, 4),
           ),
         ],
@@ -966,21 +1030,25 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
         children: [
           const Text(
             'Redacción del Correo',
-            style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15),
+            style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black),
           ),
           const SizedBox(height: 14),
 
           // Asunto
           TextFormField(
             controller: _subjectController,
-            style: const TextStyle(fontFamily: 'Inter', fontSize: 14, fontWeight: FontWeight.w600),
+            style: const TextStyle(fontFamily: 'Inter', fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black),
             decoration: InputDecoration(
               labelText: 'Asunto del Correo *',
+              labelStyle: const TextStyle(color: Colors.black87, fontSize: 13),
               hintText: 'Ej: ¡Novedades importantes en TaxiSeguro!',
+              hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               filled: true,
-              fillColor: const Color(0xFFF7F8FA),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
-              prefixIcon: const Icon(Icons.title, size: 20),
+              fillColor: const Color(0xFFF9FAFB),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.black, width: 1.5)),
+              prefixIcon: const Icon(Icons.title, size: 20, color: Colors.black87),
             ),
             validator: (val) {
               if (val == null || val.trim().isEmpty) return 'El asunto es obligatorio';
@@ -995,14 +1063,18 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
             controller: _messageController,
             minLines: 6,
             maxLines: 12,
-            style: const TextStyle(fontFamily: 'Inter', fontSize: 14, height: 1.5),
+            style: const TextStyle(fontFamily: 'Inter', fontSize: 14, height: 1.5, color: Colors.black),
             decoration: InputDecoration(
               labelText: 'Contenido del Mensaje *',
+              labelStyle: const TextStyle(color: Colors.black87, fontSize: 13),
               hintText: 'Escribe aquí el cuerpo del correo...',
+              hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               alignLabelWithHint: true,
               filled: true,
-              fillColor: const Color(0xFFF7F8FA),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+              fillColor: const Color(0xFFF9FAFB),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.grey.shade200)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.black, width: 1.5)),
             ),
             validator: (val) {
               if (val == null || val.trim().isEmpty) return 'El contenido del mensaje es obligatorio';
@@ -1015,19 +1087,23 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
           // Toggle botón CTA
           InkWell(
             onTap: () => setState(() => _showCtaFields = !_showCtaFields),
-            child: Row(
-              children: [
-                Icon(
-                  _showCtaFields ? Icons.check_box : Icons.check_box_outline_blank,
-                  color: _showCtaFields ? Colors.black : Colors.grey,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                const Text(
-                  'Incluir botón de acción (Call-to-Action)',
-                  style: TextStyle(fontFamily: 'Inter', fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ],
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    _showCtaFields ? Icons.check_box : Icons.check_box_outline_blank,
+                    color: Colors.black,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Incluir botón de acción (Call-to-Action)',
+                    style: TextStyle(fontFamily: 'Inter', fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black),
+                  ),
+                ],
+              ),
             ),
           ),
 
@@ -1038,13 +1114,16 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                 Expanded(
                   child: TextFormField(
                     controller: _ctaTextController,
-                    style: const TextStyle(fontFamily: 'Inter', fontSize: 13),
+                    style: const TextStyle(fontFamily: 'Inter', fontSize: 13, color: Colors.black),
                     decoration: InputDecoration(
                       labelText: 'Texto del botón',
+                      labelStyle: const TextStyle(color: Colors.black87, fontSize: 12),
                       hintText: 'Ej: Abrir TaxiSeguro',
                       filled: true,
-                      fillColor: const Color(0xFFF7F8FA),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                      fillColor: const Color(0xFFF9FAFB),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black, width: 1.5)),
                     ),
                   ),
                 ),
@@ -1052,13 +1131,16 @@ class _AdminMassEmailScreenState extends State<AdminMassEmailScreen> with Single
                 Expanded(
                   child: TextFormField(
                     controller: _ctaUrlController,
-                    style: const TextStyle(fontFamily: 'Inter', fontSize: 13),
+                    style: const TextStyle(fontFamily: 'Inter', fontSize: 13, color: Colors.black),
                     decoration: InputDecoration(
                       labelText: 'Enlace (URL)',
+                      labelStyle: const TextStyle(color: Colors.black87, fontSize: 12),
                       hintText: 'https://taxiseguro.net',
                       filled: true,
-                      fillColor: const Color(0xFFF7F8FA),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+                      fillColor: const Color(0xFFF9FAFB),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.black, width: 1.5)),
                     ),
                   ),
                 ),

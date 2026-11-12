@@ -78,7 +78,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     _checkActiveTrip();
     _fetchAds();
     _fetchUserStats();
-    PricingService.loadDynamicZones();
+    PricingService.loadPricingConfig();
   }
 
   Future<void> _fetchUserStats() async {
