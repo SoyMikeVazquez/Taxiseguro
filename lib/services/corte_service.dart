@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'admin_service.dart';
 
 class CorteConductor {
   final String id;
@@ -12,10 +13,12 @@ class CorteConductor {
   final String? correoConductor;
   final String? telefonoConductor;
   final int totalViajes;
-  final double totalGenerado;
-  final double comisionApp;
+  final double totalGenerado; // Ingreso Real Neto (sin cargo de pasarela MP)
+  final double comisionApp; // 20% para Administradores sobre Ingreso Real
   final double totalEfectivo;
-  final double totalTarjeta;
+  final double totalTarjeta; // Ingreso Real Neto con Tarjeta
+  final double totalTarjetaBruto; // Cobro Bruto con Tarjeta (incluyendo MP)
+  final double cargoMercadoPago; // Gasto/Cargo de pasarela Mercado Pago (No es ingreso)
   final double saldoAPagar;
   final String estatusPago; // 'pendiente', 'pagado'
   final bool correoEnviado;
@@ -35,6 +38,8 @@ class CorteConductor {
     required this.comisionApp,
     required this.totalEfectivo,
     required this.totalTarjeta,
+    this.totalTarjetaBruto = 0.0,
+    this.cargoMercadoPago = 0.0,
     required this.saldoAPagar,
     required this.estatusPago,
     required this.correoEnviado,
@@ -42,6 +47,11 @@ class CorteConductor {
   });
 
   factory CorteConductor.fromJson(Map<String, dynamic> json) {
+    final double rawEfectivo = (json['total_efectivo'] as num?)?.toDouble() ?? 0.0;
+    final double rawTarjeta = (json['total_tarjeta'] as num?)?.toDouble() ?? 0.0;
+    final double rawGenerado = (json['total_generado'] as num?)?.toDouble() ?? 0.0;
+    final double rawCargoMp = (json['cargo_mercado_pago'] as num?)?.toDouble() ?? 0.0;
+
     return CorteConductor(
       id: json['id']?.toString() ?? '',
       periodoInicio: json['periodo_inicio']?.toString() ?? '',
@@ -52,10 +62,12 @@ class CorteConductor {
       correoConductor: json['correo_conductor']?.toString(),
       telefonoConductor: json['telefono_conductor']?.toString(),
       totalViajes: (json['total_viajes'] as num?)?.toInt() ?? 0,
-      totalGenerado: (json['total_generado'] as num?)?.toDouble() ?? 0.0,
+      totalGenerado: rawGenerado,
       comisionApp: (json['comision_app'] as num?)?.toDouble() ?? 0.0,
-      totalEfectivo: (json['total_efectivo'] as num?)?.toDouble() ?? 0.0,
-      totalTarjeta: (json['total_tarjeta'] as num?)?.toDouble() ?? 0.0,
+      totalEfectivo: rawEfectivo,
+      totalTarjeta: rawTarjeta,
+      totalTarjetaBruto: rawTarjeta + rawCargoMp,
+      cargoMercadoPago: rawCargoMp,
       saldoAPagar: (json['saldo_a_pagar'] as num?)?.toDouble() ?? 0.0,
       estatusPago: json['estatus_pago']?.toString() ?? 'pendiente',
       correoEnviado: json['correo_enviado'] == true,
@@ -190,31 +202,33 @@ class CorteService {
         final String correo = driverInfo['correo'] ?? '';
         final String telefono = driverInfo['telefono'] ?? '';
 
-        double totalFare = 0.0;
+        double totalFareReal = 0.0;
         double totalCash = 0.0;
-        double totalCard = 0.0;
+        double totalCardNet = 0.0;
 
         for (var t in driverTrips) {
           final fare = (t['fare'] as num?)?.toDouble() ?? 0.0;
           final method = (t['metodo_pago'] ?? t['payment_method'] ?? 'efectivo').toString().toLowerCase();
+          final bool isCard = AdminService.esPagoConTarjeta(method);
+          final double ingresoReal = AdminService.calcularIngresoReal(fare, method);
 
-          totalFare += fare;
-          if (method.contains('tarjeta') || method.contains('card') || method.contains('terminal')) {
-            totalCard += fare;
+          totalFareReal += ingresoReal;
+          if (isCard) {
+            totalCardNet += ingresoReal;
           } else {
             totalCash += fare;
           }
         }
 
-        final double comisionApp = totalFare * 0.20; // 20% Comisión TaxiSeguro
+        final double comisionApp = (totalFareReal * 0.20 * 100).roundToDouble() / 100.0; // 20% Comisión Administradores sobre Ingreso Real
 
         // Lo que el conductor debe transferir:
         // Cobró totalCash en mano. Debe el 20% de ese efectivo.
-        // Si tuvo viajes con tarjeta, la app tiene retenido el 80% que le pertenece al conductor.
+        // Si tuvo viajes con tarjeta, la app recibió totalCardNet (ya descontado Mercado Pago) y retiene el 80% del conductor.
         final double comisionEfectivoAdeudada = totalCash * 0.20;
-        final double gananciaTarjetaRetenida = totalCard * 0.80;
+        final double gananciaTarjetaRetenida = totalCardNet * 0.80;
         final double saldoNetoAPagar = comisionEfectivoAdeudada - gananciaTarjetaRetenida;
-        final double saldoFinal = saldoNetoAPagar > 0 ? saldoNetoAPagar : 0.0;
+        final double saldoFinal = saldoNetoAPagar > 0 ? (saldoNetoAPagar * 100).roundToDouble() / 100.0 : comisionApp;
 
         // Upsert en la tabla cortes_conductores
         await _supabase.from('cortes_conductores').upsert({
@@ -226,10 +240,10 @@ class CorteService {
           'correo_conductor': correo,
           'telefono_conductor': telefono,
           'total_viajes': driverTrips.length,
-          'total_generado': totalFare,
+          'total_generado': totalFareReal,
           'comision_app': comisionApp,
           'total_efectivo': totalCash,
-          'total_tarjeta': totalCard,
+          'total_tarjeta': totalCardNet,
           'saldo_a_pagar': saldoFinal,
           'estatus_pago': 'pendiente',
         }, onConflict: 'conductor_id,periodo_inicio,periodo_fin');

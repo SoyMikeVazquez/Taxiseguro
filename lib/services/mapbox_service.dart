@@ -44,6 +44,37 @@ class MapboxRouteResult {
 class MapboxService {
   static const String _mapboxToken = Env.mapboxApiKey;
 
+  /// Genera una URL de imagen estática de Mapbox para previsualizar el mapa con pines de inicio, fin y cancelación
+  static String getStaticMapUrl({
+    LatLng? origin,
+    LatLng? destination,
+    LatLng? driverLocation,
+    int width = 600,
+    int height = 320,
+  }) {
+    final List<String> pins = [];
+
+    // Pin A: Origen (Verde)
+    if (origin != null && origin.latitude != 0 && origin.longitude != 0) {
+      pins.add('pin-s-a+10B981(${origin.longitude},${origin.latitude})');
+    }
+
+    // Pin B: Destino (Negro)
+    if (destination != null && destination.latitude != 0 && destination.longitude != 0) {
+      pins.add('pin-s-b+111827(${destination.longitude},${destination.latitude})');
+    }
+
+    // Pin Conductor / Cancelación (Auto Rojo)
+    if (driverLocation != null && driverLocation.latitude != 0 && driverLocation.longitude != 0) {
+      pins.add('pin-s-car+EF4444(${driverLocation.longitude},${driverLocation.latitude})');
+    }
+
+    if (pins.isEmpty) return '';
+
+    final overlay = pins.join(',');
+    return 'https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/$overlay/auto/${width}x$height@2x?access_token=$_mapboxToken';
+  }
+
   /// Busca lugares mediante la API de Geocoding de Mapbox (priorizando la proximidad local)
   Future<List<MapboxPlace>> searchPlaces(String query, {double? proximityLng, double? proximityLat}) async {
     if (query.trim().isEmpty) return [];

@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'splash_router_screen.dart';
 import 'driver_registration_screen.dart';
+import '../services/referral_service.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -23,11 +24,11 @@ class _AuthScreenState extends State<AuthScreen> {
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
 
-  // Profile image and Driver Referral fields
+  // Profile image and Referral fields (Conductores y Pasajeros)
   File? _profileImage;
   List<Map<String, dynamic>> _drivers = [];
   final _referralPhoneController = TextEditingController();
-  Map<String, dynamic>? _foundReferralDriver;
+  Map<String, dynamic>? _foundReferral;
   bool _isSearchingReferral = false;
   String? _referralSearchError;
 
@@ -45,7 +46,7 @@ class _AuthScreenState extends State<AuthScreen> {
     final cleanDigits = val.replaceAll(RegExp(r'\D'), '');
     if (cleanDigits.isEmpty) {
       setState(() {
-        _foundReferralDriver = null;
+        _foundReferral = null;
         _referralSearchError = null;
         _isSearchingReferral = false;
       });
@@ -54,40 +55,87 @@ class _AuthScreenState extends State<AuthScreen> {
 
     if (cleanDigits.length < 10) {
       setState(() {
-        _foundReferralDriver = null;
+        _foundReferral = null;
         _referralSearchError = null;
         _isSearchingReferral = false;
       });
       return;
     }
 
-    _searchDriverByPhone(cleanDigits);
+    _searchReferralByPhone(cleanDigits);
   }
 
-  Future<void> _searchDriverByPhone(String cleanDigits) async {
+  Future<void> _searchReferralByPhone(String cleanDigits) async {
     setState(() {
       _isSearchingReferral = true;
       _referralSearchError = null;
     });
 
     Map<String, dynamic>? match;
-    for (var d in _drivers) {
-      final dPhone = (d['telefono'] ?? '').toString().replaceAll(RegExp(r'\D'), '');
-      if (dPhone.isNotEmpty && (dPhone == cleanDigits || dPhone.endsWith(cleanDigits) || cleanDigits.endsWith(dPhone))) {
-        match = d;
-        break;
+
+    // 1. Intentar RPC en base de datos si existe
+    try {
+      final rpcRes = await Supabase.instance.client.rpc(
+        'buscar_referido_por_telefono',
+        params: {'p_telefono': cleanDigits},
+      );
+      if (rpcRes != null && rpcRes is List && rpcRes.isNotEmpty) {
+        match = Map<String, dynamic>.from(rpcRes.first);
+      }
+    } catch (_) {}
+
+    // 2. Fallback: Buscar en conductores en memoria o en tabla conductores
+    if (match == null) {
+      for (var d in _drivers) {
+        final dPhone = (d['telefono'] ?? '').toString().replaceAll(RegExp(r'\D'), '');
+        if (dPhone.isNotEmpty && (dPhone == cleanDigits || dPhone.endsWith(cleanDigits) || cleanDigits.endsWith(dPhone))) {
+          match = {
+            'tipo': 'conductor',
+            'id': d['id'],
+            'user_id': d['user_id'],
+            'nombre': d['nombre_completo'] ?? d['nombre'],
+            'placas': d['placas'],
+          };
+          break;
+        }
+      }
+
+      if (match == null) {
+        try {
+          final resCond = await Supabase.instance.client
+              .from('conductores')
+              .select('id, user_id, nombre, nombre_completo, placas, telefono, Aprobacion')
+              .eq('telefono', cleanDigits)
+              .maybeSingle();
+          if (resCond != null) {
+            match = {
+              'tipo': 'conductor',
+              'id': resCond['id'],
+              'user_id': resCond['user_id'],
+              'nombre': resCond['nombre_completo'] ?? resCond['nombre'],
+              'placas': resCond['placas'],
+            };
+          }
+        } catch (_) {}
       }
     }
 
+    // 3. Fallback: Si no es conductor, buscar en la tabla 'users' (Pasajeros)
     if (match == null) {
       try {
-        final res = await Supabase.instance.client
-            .from('conductores')
-            .select('id, user_id, nombre, nombre_completo, placas, telefono, Aprobacion')
+        final resUser = await Supabase.instance.client
+            .from('users')
+            .select('id, user_id, nombre, telefono, isConductor')
             .eq('telefono', cleanDigits)
             .maybeSingle();
-        if (res != null) {
-          match = Map<String, dynamic>.from(res);
+        if (resUser != null) {
+          match = {
+            'tipo': 'pasajero',
+            'id': resUser['id'],
+            'user_id': resUser['user_id'],
+            'nombre': resUser['nombre'] ?? 'Usuario TaxiSeguro',
+            'placas': '',
+          };
         }
       } catch (_) {}
     }
@@ -96,11 +144,11 @@ class _AuthScreenState extends State<AuthScreen> {
       setState(() {
         _isSearchingReferral = false;
         if (match != null) {
-          _foundReferralDriver = match;
+          _foundReferral = match;
           _referralSearchError = null;
         } else {
-          _foundReferralDriver = null;
-          _referralSearchError = 'No se encontró ningún conductor registrado con el número +52 $cleanDigits';
+          _foundReferral = null;
+          _referralSearchError = 'No se encontró ningún conductor ni usuario registrado con el número +52 $cleanDigits';
         }
       });
     }
@@ -254,15 +302,15 @@ class _AuthScreenState extends State<AuthScreen> {
 
     final referralDigits = _referralPhoneController.text.trim().replaceAll(RegExp(r'\D'), '');
 
-    // Validación obligatoria: Si ingresó un conductor referido, debe ser válido y debe subir su foto de perfil
+    // Validación obligatoria: Si ingresó un referido, debe ser válido y debe subir su foto de perfil
     if (!_isLogin && referralDigits.isNotEmpty) {
-      if (_foundReferralDriver == null) {
-        _showErrorSnackBar('El número del conductor referido no es válido o no existe. Verifica el número o bórralo si no tienes referido.');
+      if (_foundReferral == null) {
+        _showErrorSnackBar('El número del referido no es válido o no existe. Verifica el número o bórralo si no tienes referido.');
         return;
       }
 
       if (_profileImage == null) {
-        _showErrorSnackBar('Para registrarte con un conductor referido, es obligatorio subir tu foto de perfil.');
+        _showErrorSnackBar('Para registrarte con un referido, es obligatorio subir tu foto de perfil.');
         return;
       }
     }
@@ -387,13 +435,33 @@ class _AuthScreenState extends State<AuthScreen> {
             userData['perfilCompletado'] = true;
           }
 
-          if (_foundReferralDriver != null && referralDigits.isNotEmpty) {
+          if (_foundReferral != null && referralDigits.isNotEmpty) {
+            final String tipo = (_foundReferral!['tipo'] ?? 'conductor').toString();
             userData['referido'] = referralDigits;
             userData['time_referido'] = DateTime.now().toUtc().toIso8601String();
+            userData['tipo_referido'] = tipo;
+            userData['referente_id'] = _foundReferral!['user_id'] ?? _foundReferral!['id'];
+
+            // Si fue referido por un pasajero, otorgar de inmediato 20% de descuento para su viaje de bienvenida
+            if (tipo == 'pasajero') {
+              userData['descuento_siguiente_viaje'] = 20.0;
+              userData['viajes_con_descuento'] = 1;
+            }
           }
 
           // 1. Register in public.users as Passenger
           await Supabase.instance.client.from('users').insert(userData);
+
+          // 2. Registrar en las columnas JSON y numéricas del referente
+          if (_foundReferral != null && referralDigits.isNotEmpty) {
+            ReferralService().recordNewReferral(
+              referrerPhone: referralDigits,
+              newUserId: userId,
+              newUserName: name.isNotEmpty ? name : email.split('@').first,
+              newUserPhone: phone,
+              isNewUserConductor: false,
+            );
+          }
         }
 
         if (mounted) {
@@ -415,7 +483,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       _nameController.clear();
                       _phoneController.clear();
                       _referralPhoneController.clear();
-                      _foundReferralDriver = null;
+                      _foundReferral = null;
                       _referralSearchError = null;
                       _profileImage = null;
                     });
@@ -580,11 +648,13 @@ class _AuthScreenState extends State<AuthScreen> {
   Widget _buildReferralPhoneField() {
     final cleanDigits = _referralPhoneController.text.trim().replaceAll(RegExp(r'\D'), '');
     final bool hasReferral = cleanDigits.isNotEmpty;
-    final bool isFound = _foundReferralDriver != null;
-    final String? driverName = isFound
-        ? ((_foundReferralDriver!['nombre_completo'] ?? _foundReferralDriver!['nombre'])?.toString().trim())
+    final bool isFound = _foundReferral != null;
+    final String tipo = (isFound ? (_foundReferral!['tipo'] ?? 'conductor') : '').toString();
+    final bool isConductor = tipo == 'conductor';
+    final String? referralName = isFound
+        ? ((_foundReferral!['nombre_completo'] ?? _foundReferral!['nombre'])?.toString().trim())
         : null;
-    final String? driverPlacas = isFound ? _foundReferralDriver!['placas']?.toString().trim() : null;
+    final String? driverPlacas = (isFound && isConductor) ? _foundReferral!['placas']?.toString().trim() : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -592,7 +662,7 @@ class _AuthScreenState extends State<AuthScreen> {
         Row(
           children: [
             const Text(
-              'Conductor que te refirió',
+              'Usuario que te refirió',
               style: TextStyle(
                 fontFamily: 'Inter',
                 fontSize: 14,
@@ -688,7 +758,7 @@ class _AuthScreenState extends State<AuthScreen> {
           ),
         ),
 
-        // Estado de búsqueda / Conductor encontrado / Error
+        // Estado de búsqueda / Referido encontrado / Error
         if (_isSearchingReferral) ...[
           const Padding(
             padding: EdgeInsets.only(top: 8, left: 4),
@@ -701,7 +771,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
                 SizedBox(width: 8),
                 Text(
-                  'Verificando número de conductor...',
+                  'Buscando usuario o conductor referido...',
                   style: TextStyle(fontFamily: 'Inter', fontSize: 12, color: Colors.black54),
                 ),
               ],
@@ -731,16 +801,35 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        driverPlacas != null && driverPlacas.isNotEmpty
-                            ? 'Conductor: $driverName ($driverPlacas)'
-                            : 'Conductor: $driverName',
-                        style: const TextStyle(
-                          fontFamily: 'Google Sans',
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                          color: Color(0xFF065F46),
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isConductor
+                                ? (driverPlacas != null && driverPlacas.isNotEmpty
+                                    ? 'Conductor: $referralName ($driverPlacas)'
+                                    : 'Conductor: $referralName')
+                                : 'Usuario: $referralName',
+                            style: const TextStyle(
+                              fontFamily: 'Google Sans',
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                              color: Color(0xFF065F46),
+                            ),
+                          ),
+                          if (!isConductor) ...[
+                            const SizedBox(height: 2),
+                            const Text(
+                              '20% de descuento en tu siguiente viaje',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                                color: Color(0xFF047857),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   ],
@@ -900,7 +989,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                           shape: BoxShape.circle,
                                           color: const Color(0xFFF3F3F3),
                                           border: Border.all(
-                                            color: _foundReferralDriver != null && _profileImage == null
+                                            color: _foundReferral != null && _profileImage == null
                                                 ? Colors.orangeAccent
                                                 : Colors.black12,
                                             width: 2.5,
@@ -943,14 +1032,14 @@ class _AuthScreenState extends State<AuthScreen> {
                               const SizedBox(height: 6),
                               Center(
                                 child: Text(
-                                  _foundReferralDriver != null && _profileImage == null
+                                  _foundReferral != null && _profileImage == null
                                       ? 'Foto de perfil (Obligatoria para referidos *)'
                                       : (_profileImage != null ? 'Foto cargada con éxito' : 'Foto de perfil (Opcional)'),
                                   style: TextStyle(
                                     fontFamily: 'Inter',
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
-                                    color: _foundReferralDriver != null && _profileImage == null
+                                    color: _foundReferral != null && _profileImage == null
                                         ? Colors.orange[800]
                                         : (_profileImage != null ? Colors.green[700] : Colors.black54),
                                   ),
@@ -1096,7 +1185,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                     _phoneController.clear();
                                     _profileImage = null;
                                     _referralPhoneController.clear();
-                                    _foundReferralDriver = null;
+                                    _foundReferral = null;
                                     _referralSearchError = null;
                                   });
                                 },

@@ -46,6 +46,11 @@ class _AdminCutoffDetailScreenState extends State<AdminCutoffDetailScreen> {
             id: driver.id,
             name: driver.name,
             totalRevenue: driver.totalRevenue,
+            grossRevenueWithGateway: driver.grossRevenueWithGateway,
+            cashRevenue: driver.cashRevenue,
+            cardGrossRevenue: driver.cardGrossRevenue,
+            cardNetRevenue: driver.cardNetRevenue,
+            mercadoPagoFee: driver.mercadoPagoFee,
             amountDue: driver.amountDue,
             isPaid: true,
           ));
@@ -124,9 +129,19 @@ class _AdminCutoffDetailScreenState extends State<AdminCutoffDetailScreen> {
                       ),
                       child: Column(
                         children: [
-                          _buildDetailRow('Ingresos generados (2 días)', '\$${ingresos2Dias.toStringAsFixed(2)}'),
-                          const Divider(height: 32),
-                          _buildDetailRow('Monto correspondiente (20%)', '\$${aPagar.toStringAsFixed(2)}', isHighlight: true),
+                          _buildDetailRow('Ingreso Real Neto (2 días • Sin MP)', '\$${ingresos2Dias.toStringAsFixed(2)}'),
+                          if (driver.mercadoPagoFee > 0) ...[
+                            const SizedBox(height: 10),
+                            _buildDetailRow('Cobro bruto con tarjeta', '\$${driver.cardGrossRevenue.toStringAsFixed(2)}'),
+                            const SizedBox(height: 6),
+                            _buildDetailRow('Cargo Pasarela Mercado Pago (No ingreso)', '-\$${driver.mercadoPagoFee.toStringAsFixed(2)}'),
+                            const SizedBox(height: 6),
+                            _buildDetailRow('Ingreso real tarjeta (libre de MP)', '\$${driver.cardNetRevenue.toStringAsFixed(2)}'),
+                          ],
+                          const Divider(height: 28),
+                          _buildDetailRow('Ganancia Conductor (80% Real)', '\$${(ingresos2Dias * 0.80).toStringAsFixed(2)}'),
+                          const SizedBox(height: 10),
+                          _buildDetailRow('Administradores (20% Real)', '\$${aPagar.toStringAsFixed(2)}', isHighlight: true),
                         ],
                       ),
                     ),
@@ -212,6 +227,12 @@ class _AdminCutoffDetailScreenState extends State<AdminCutoffDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat("dd 'de' MMMM", 'es_MX');
+    final allDrivers = [..._cutoff.paidDrivers, ..._cutoff.pendingDrivers];
+    final double totalRealRevenue = allDrivers.fold(0.0, (sum, d) => sum + d.totalRevenue);
+    final double totalAdminCommission = allDrivers.fold(0.0, (sum, d) => sum + d.amountDue);
+    final double totalMpGatewayFee = allDrivers.fold(0.0, (sum, d) => sum + d.mercadoPagoFee);
+    final double totalCardGross = allDrivers.fold(0.0, (sum, d) => sum + d.cardGrossRevenue);
+    final double totalCardNet = allDrivers.fold(0.0, (sum, d) => sum + d.cardNetRevenue);
     
     return Scaffold(
       backgroundColor: const Color(0xFFF7F8FA),
@@ -258,8 +279,104 @@ class _AdminCutoffDetailScreenState extends State<AdminCutoffDetailScreen> {
               ),
             ],
           ).animate().fade(duration: 400.ms).slideY(begin: 0.1, end: 0),
+
+          const SizedBox(height: 18),
+
+          // División de Ingresos Reales y Pasarela Mercado Pago en Fecha de Corte
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: const Color(0xFF141414),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: const [
+                        Icon(Icons.credit_score_rounded, color: Color(0xFFC7FF2E), size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Balance Real y Pasarela Mercado Pago',
+                          style: TextStyle(
+                            fontFamily: 'Google Sans',
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'CORTE 2D',
+                        style: TextStyle(color: Color(0xFFC7FF2E), fontSize: 10, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Ingresos Reales del Corte (Sin pasarela MP):', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    Text('\$${totalRealRevenue.toStringAsFixed(2)} MXN', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Comisión Administradores (20% Real):', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    Text('\$${totalAdminCommission.toStringAsFixed(2)} MXN', style: const TextStyle(color: Color(0xFFC7FF2E), fontWeight: FontWeight.bold, fontSize: 13)),
+                  ],
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Divider(color: Colors.white24, height: 1),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Cobro bruto con tarjeta en el corte:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    Text('\$${totalCardGross.toStringAsFixed(2)} MXN', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Extras cobrados por Mercado Pago (No ingreso):', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    Text('-\$${totalMpGatewayFee.toStringAsFixed(2)} MXN', style: const TextStyle(color: Color(0xFFFFD600), fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Ingreso real neto en tarjeta:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    Text('\$${totalCardNet.toStringAsFixed(2)} MXN', style: const TextStyle(color: Color(0xFFC7FF2E), fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Nota general: Los cargos de pasarela de pago de Mercado Pago se separan de los ingresos del corte y solo se mencionan como gasto de procesamiento digital en pagos con tarjeta.',
+                  style: TextStyle(color: Colors.white54, fontSize: 10, height: 1.35),
+                ),
+              ],
+            ),
+          ),
           
-          const SizedBox(height: 32),
+          const SizedBox(height: 28),
           
           _buildDriverSection(context, 'Conductores Pendientes', _cutoff.pendingDrivers, false),
           const SizedBox(height: 24),
@@ -333,7 +450,9 @@ class _AdminCutoffDetailScreenState extends State<AdminCutoffDetailScreen> {
                   ),
                   title: Text(driver.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                   subtitle: Text(
-                    'Ingresos: \$${driver.totalRevenue.toStringAsFixed(2)} • A pagar: \$${driver.amountDue.toStringAsFixed(2)}',
+                    driver.mercadoPagoFee > 0
+                        ? 'Ingreso Real: \$${driver.totalRevenue.toStringAsFixed(2)} (MP: -\$${driver.mercadoPagoFee.toStringAsFixed(2)}) • Admins (20%): \$${driver.amountDue.toStringAsFixed(2)}'
+                        : 'Ingreso Real: \$${driver.totalRevenue.toStringAsFixed(2)} • Admins (20%): \$${driver.amountDue.toStringAsFixed(2)}',
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                   trailing: const Icon(Icons.chevron_right, color: Colors.black26),

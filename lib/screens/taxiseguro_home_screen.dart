@@ -23,10 +23,15 @@ import '../services/rating_service.dart';
 import '../services/geofence_service.dart';
 import '../widgets/animated_ad_card.dart';
 import '../widgets/ad_detail_dialog.dart';
+import '../widgets/emergency_dialog.dart';
 import 'auth_screen.dart';
 import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 import '../models/ad.dart';
 import '../services/ad_service.dart';
+import '../services/mercado_pago_service.dart';
+import '../models/saved_card.dart';
+import '../services/saved_card_service.dart';
+import '../widgets/add_card_bottom_sheet.dart';
 
 class TaxiseguroHomeScreen extends StatefulWidget {
   const TaxiseguroHomeScreen({super.key});
@@ -59,6 +64,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   bool _isDriverAssigned = false;
   bool _isTripCompleted = false;
   bool _showActiveTripDetails = false;
+  String _selectedPaymentMethod = 'efectivo';
+  SavedCard? _savedCard;
+  PaymentExecutionResult? _lastPaymentResult;
+  bool _isProcessingAutoPayment = false;
+  double _userDiscountPercent = 0.0;
 
   // Pin Picker State (Uber / DiDi pin selection mode)
   bool _isPinPickerMode = false;
@@ -78,7 +88,37 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     _checkActiveTrip();
     _fetchAds();
     _fetchUserStats();
+    _loadSavedCard();
     PricingService.loadPricingConfig();
+  }
+
+  Future<void> _loadSavedCard() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user != null) {
+      final card = await SavedCardService().getSavedCard(user.id);
+      if (mounted && card != null) {
+        setState(() => _savedCard = card);
+      }
+    }
+  }
+
+  Future<SavedCard?> _promptAddCard() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return null;
+
+    final card = await AddCardBottomSheet.show(
+      context,
+      onCardAdded: (newCard) {
+        SavedCardService().saveCard(user.id, newCard);
+        if (mounted) {
+          setState(() {
+            _savedCard = newCard;
+            _selectedPaymentMethod = 'tarjeta';
+          });
+        }
+      },
+    );
+    return card;
   }
 
   Future<void> _fetchUserStats() async {
@@ -112,6 +152,25 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       }
     } catch (e) {
       print('Error fetching ratings stats: $e');
+    }
+
+    try {
+      // Consultar si el usuario tiene un 20% de descuento por referido disponible
+      final userDoc = await Supabase.instance.client
+          .from('users')
+          .select('descuento_siguiente_viaje, viajes_con_descuento')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+      if (userDoc != null && mounted) {
+        final double discount = (userDoc['descuento_siguiente_viaje'] as num?)?.toDouble() ?? 0.0;
+        final int count = (userDoc['viajes_con_descuento'] as num?)?.toInt() ?? 0;
+        setState(() {
+          _userDiscountPercent = (discount > 0.0 || count > 0) ? (discount > 0 ? discount : 20.0) : 0.0;
+        });
+      }
+    } catch (e) {
+      debugPrint('Aviso al consultar descuento de referidos: $e');
     }
   }
 
@@ -171,6 +230,9 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
           _currentTripData = activeTrip;
           _selectedOrigin = activeTrip.originAddress;
           _selectedDestination = activeTrip.destinationAddress;
+          if (activeTrip.originLat != null && activeTrip.originLng != null) {
+            _selectedOriginLatLng = LatLng(activeTrip.originLat!, activeTrip.originLng!);
+          }
           if (activeTrip.destinationLat != null && activeTrip.destinationLng != null) {
             _selectedDestinationLatLng = LatLng(activeTrip.destinationLat!, activeTrip.destinationLng!);
           }
@@ -180,7 +242,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                 final createdTime = activeTrip.createdAt!;
                 if (DateTime.now().difference(createdTime).inMinutes > 35) {
                   // Viaje expirado, lo cancelamos automáticamente
-                  _tripService.cancelTrip(activeTrip.id!);
+                  _tripService.cancelTrip(
+                    activeTrip.id!,
+                    cancelReason: 'Cancelado automáticamente por expiración de tiempo (35 min)',
+                    cancelledBy: 'sistema',
+                  );
                   return; // No mostramos nada, dejamos al usuario en el inicio
                 }
               } catch (e) {
@@ -217,34 +283,59 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
           if (trip.status == 'accepted') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
-            BackgroundServiceHelper.updateTripStatus('Viaje Aceptado', 'Conductor en camino');
+            final pinStr = trip.codigo != null ? trip.codigo.toString().padLeft(5, '0') : null;
+            final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)} MXN' : null;
+            BackgroundServiceHelper.updateTripStatus(
+              'Viaje Aceptado',
+              'Conductor en camino',
+              driverName: trip.nameDriver,
+              destination: trip.destinationAddress,
+              fare: fareStr,
+              pinCode: pinStr,
+            );
             if (_lastNotifiedStatus != 'accepted') {
               _lastNotifiedStatus = 'accepted';
               BackgroundServiceHelper.showAlertNotification(
-                '🚖 ¡Conductor Asignado!',
-                'Un conductor aceptó tu solicitud y va en camino.',
+                'Conductor Asignado',
+                'Un conductor acepto tu solicitud y va en camino.',
               );
             }
           } else if (trip.status == 'arrived') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
-            BackgroundServiceHelper.updateTripStatus('Conductor Llegó', 'Tu conductor está afuera');
+            final pinStr = trip.codigo != null ? trip.codigo.toString().padLeft(5, '0') : null;
+            final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)} MXN' : null;
+            BackgroundServiceHelper.updateTripStatus(
+              'Conductor Llego',
+              'Tu conductor esta afuera',
+              driverName: trip.nameDriver,
+              destination: trip.destinationAddress,
+              fare: fareStr,
+              pinCode: pinStr,
+            );
             if (_lastNotifiedStatus != 'arrived') {
               _lastNotifiedStatus = 'arrived';
-              final pinMsg = trip.codigo != null ? ' Tu PIN de viaje es ${trip.codigo.toString().padLeft(5, '0')}.' : '';
+              final pinMsg = pinStr != null ? ' Tu PIN de abordaje es $pinStr.' : '';
               BackgroundServiceHelper.showAlertNotification(
-                '📍 ¡Tu Conductor Llegó!',
-                'El taxi está esperándote en tu punto de partida.$pinMsg',
+                'Tu Conductor Llego',
+                'El taxi esta esperandote en tu punto de partida.$pinMsg',
               );
             }
           } else if (trip.status == 'in_progress') {
             _isSearchingDriver = false;
             _isDriverAssigned = true;
-            BackgroundServiceHelper.updateTripStatus('Viaje Activo', 'En camino al destino');
+            final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)} MXN' : null;
+            BackgroundServiceHelper.updateTripStatus(
+              'Viaje Activo',
+              'En camino al destino',
+              driverName: trip.nameDriver,
+              destination: trip.destinationAddress,
+              fare: fareStr,
+            );
             if (_lastNotifiedStatus != 'in_progress') {
               _lastNotifiedStatus = 'in_progress';
               BackgroundServiceHelper.showAlertNotification(
-                '🛣️ Viaje en Curso',
+                'Viaje en Curso',
                 'Vas en camino seguro a tu destino.',
               );
             }
@@ -256,9 +347,13 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             if (_lastNotifiedStatus != 'completed') {
               _lastNotifiedStatus = 'completed';
               BackgroundServiceHelper.showAlertNotification(
-                '🏁 ¡Viaje Completado!',
-                'Has llegado a tu destino. ¡Gracias por viajar con TaxiSeguro!',
+                'Viaje Completado',
+                'Has llegado a tu destino. Gracias por viajar con TaxiSeguro.',
               );
+              final pMethod = (trip.paymentMethod ?? _selectedPaymentMethod).toLowerCase();
+              if (pMethod == 'tarjeta' || pMethod == 'mercadopago') {
+                _processAutomaticPayment(trip);
+              }
             }
           } else if (trip.status == 'cancelled') {
             if (_currentTripId != null) {
@@ -276,10 +371,13 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             _currentTripData = null;
             _selectedDestination = null;
             _showActiveTripDetails = false;
-            BackgroundServiceHelper.stopPassengerTrip();
             if (_lastNotifiedStatus != 'cancelled') {
               _lastNotifiedStatus = 'cancelled';
-              BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'Tu viaje ha sido cancelado.');
+              BackgroundServiceHelper.notifyTripCancelled(
+                reason: trip.cancelReason?.isNotEmpty == true
+                    ? trip.cancelReason!
+                    : 'Tu viaje ha sido cancelado.',
+              );
             }
           } else if (trip.status == 'pending') {
             BackgroundServiceHelper.updateTripStatus('TaxiSeguro', 'Buscando conductor...');
@@ -310,11 +408,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
         _selectedOriginLatLng = null;
       } else {
         _selectedOrigin = origin;
-        if (originLatLng != null) {
-          _selectedOriginLatLng = originLatLng;
-        } else if (origin.toLowerCase().contains('ubicación actual')) {
-          _selectedOriginLatLng = null;
-        }
+        _selectedOriginLatLng = originLatLng ?? LocationService.lastKnownLocation;
       }
 
       if (destination.trim().isEmpty) {
@@ -322,12 +416,20 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
         _selectedDestinationLatLng = null;
       } else {
         _selectedDestination = destination;
-        if (destinationLatLng != null) {
-          _selectedDestinationLatLng = destinationLatLng;
-        }
+        _selectedDestinationLatLng = destinationLatLng;
       }
       _isSearching = false;
     });
+
+    if (_selectedOriginLatLng == null && (origin.isEmpty || origin.toLowerCase().contains('ubicación actual'))) {
+      LocationService().getCurrentLocation().then((loc) {
+        if (loc != null && mounted) {
+          setState(() {
+            _selectedOriginLatLng = loc;
+          });
+        }
+      });
+    }
   }
 
   void _onPinConfirmed() {
@@ -354,11 +456,58 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   }
 
   Future<void> _onCancelRide() async {
-    if (_currentTripId != null) {
-      await _tripService.cancelTrip(_currentTripId!, cancelReason: 'Cancelado por el pasajero');
-      BackgroundServiceHelper.stopPassengerTrip();
+    // Si el conductor ya aceptó o está en camino, el pasajero no puede cancelar
+    final String currentStatus = _currentTripData?.status ?? '';
+    final bool isAssignedOrEnRoute = _isDriverAssigned ||
+        (_currentTripData?.driverId != null && _currentTripData!.driverId!.isNotEmpty) ||
+        currentStatus == 'accepted' ||
+        currentStatus == 'arrived' ||
+        currentStatus == 'in_progress';
+
+    if (isAssignedOrEnRoute) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Row(
+              children: [
+                Icon(Icons.directions_car, color: Colors.black87),
+                SizedBox(width: 8),
+                Text('Conductor en camino', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              ],
+            ),
+            content: const Text(
+              'Tu conductor ya ha tomado el viaje y se dirige a tu punto de partida. Una vez asignada la unidad, solo el conductor puede cancelar el servicio.',
+              style: TextStyle(fontSize: 14, height: 1.4, color: Colors.black87),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Entendido', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
     }
-    
+
+    // Cancelar la solicitud mientras busca conductor (sin restricciones ni bloqueos)
+    final tripIdToCancel = _currentTripId;
+    if (tripIdToCancel != null) {
+      _tripService.cancelTrip(
+        tripIdToCancel,
+        cancelReason: 'Cancelado por el pasajero durante la búsqueda',
+        cancelledBy: 'pasajero',
+      );
+      BackgroundServiceHelper.stopPassengerTrip();
+      BackgroundServiceHelper.notifyTripCancelled(
+        reason: 'Has cancelado la solicitud de viaje.',
+      );
+    }
+
     setState(() {
       _currentTripId = null;
       _currentTripData = null;
@@ -374,6 +523,67 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       _isTripCompleted = false;
       _showActiveTripDetails = false;
     });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Solicitud de viaje cancelada.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _processAutomaticPayment(Trip trip) async {
+    if (_isProcessingAutoPayment) return;
+    _isProcessingAutoPayment = true;
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null || trip.fare == null || trip.id == null) {
+      _isProcessingAutoPayment = false;
+      return;
+    }
+
+    final card = _savedCard ?? await SavedCardService().getSavedCard(user.id);
+    if (card == null || card.token.isEmpty) {
+      debugPrint('Aviso: no hay tarjeta registrada para cobro automático');
+      _isProcessingAutoPayment = false;
+      return;
+    }
+
+    try {
+      final result = await MercadoPagoService().processCardPayment(
+        amount: trip.fare!,
+        token: card.token,
+        tripId: trip.id!,
+        description: 'Viaje TaxiSeguro: ${trip.originAddress} a ${trip.destinationAddress}',
+        payerEmail: user.email,
+        paymentMethodId: card.brand,
+        cardLastFour: card.lastFourDigits,
+      );
+
+      if (mounted) {
+        setState(() {
+          _lastPaymentResult = result;
+          _isProcessingAutoPayment = false;
+        });
+
+        if (result.isApproved) {
+          BackgroundServiceHelper.showAlertNotification(
+            'Pago Aprobado',
+            'Cobro de \$${trip.fare!.toStringAsFixed(2)} MXN procesado automáticamente con tu tarjeta ${card.brandDisplayName} terminada en ${card.lastFourDigits}.',
+          );
+        } else {
+          BackgroundServiceHelper.showAlertNotification(
+            'Aviso de Pago',
+            'No se pudo cobrar a tu tarjeta: ${result.message}. Por favor paga en efectivo al conductor.',
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error procesando cobro automático con tarjeta: $e');
+      _isProcessingAutoPayment = false;
+    }
   }
 
   Future<void> _onConfirmRide() async {
@@ -385,15 +595,31 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       _routeDistance ?? 0,
       _routeDuration ?? 0,
       origin: _selectedOriginLatLng,
+      paymentMethod: _selectedPaymentMethod,
+      discountPercent: _userDiscountPercent,
     );
 
     final locService = LocationService();
     final currentLoc = await locService.getCurrentLocation();
     
-    final double originLat = _selectedOriginLatLng?.latitude ?? currentLoc?.latitude ?? GeofenceService.defaultChiapasCenter.latitude;
-    final double originLng = _selectedOriginLatLng?.longitude ?? currentLoc?.longitude ?? GeofenceService.defaultChiapasCenter.longitude;
+    final double? originLat = _selectedOriginLatLng?.latitude ?? currentLoc?.latitude ?? LocationService.lastKnownLocation?.latitude;
+    final double? originLng = _selectedOriginLatLng?.longitude ?? currentLoc?.longitude ?? LocationService.lastKnownLocation?.longitude;
 
-    // Validación de zona: Solo permitido en el estado de Chiapas (salvo permiso especial)
+    if (originLat == null || originLng == null) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No pudimos determinar tu punto de origen. Por favor selecciona tu ubicación en el mapa o escribe una dirección.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Validación de zona: Cobertura nacional dinámica
     final bool canRequest = await GeofenceService.canRequestTrip(
       userId: user.id,
       origin: LatLng(originLat, originLng),
@@ -414,7 +640,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
               ],
             ),
             content: const Text(
-              'Por el momento, el servicio de TaxiSeguro solo está disponible para solicitar conductores dentro del estado de Chiapas.',
+              'Por el momento, el servicio de TaxiSeguro solo está disponible dentro de la zona de cobertura autorizada.',
               style: TextStyle(fontSize: 15, height: 1.4),
             ),
             actions: [
@@ -439,6 +665,24 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       }
     }
 
+    final bool isPayingWithCard =
+        _selectedPaymentMethod == 'tarjeta' || _selectedPaymentMethod == 'mercadopago';
+
+    if (isPayingWithCard) {
+      // Si el usuario no tiene tarjeta guardada, solicitar sus datos antes de pedir el viaje
+      if (_savedCard == null) {
+        setState(() => _isLoading = false);
+        final newCard = await _promptAddCard();
+        if (newCard == null) {
+          // El usuario canceló la entrada de tarjeta
+          return;
+        }
+      }
+      // Con tarjeta guardada, NO se cobra en este momento.
+      // Se cobrará de forma 100% automática al finalizar el viaje.
+      setState(() => _isLoading = true);
+    }
+
     final newTrip = Trip(
       userId: user.id,
       originAddress: finalOriginAddress,
@@ -450,7 +694,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       fare: calculatedFare,
       distanceKm: _routeDistance != null ? (_routeDistance! / 1000.0) : null,
       status: 'pending',
-      paymentMethod: 'efectivo',
+      paymentMethod: isPayingWithCard ? 'tarjeta' : 'efectivo',
     );
     final trip = await _tripService.createTrip(newTrip);
     setState(() => _isLoading = false);
@@ -458,6 +702,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     if (trip != null) {
       setState(() {
         _currentTripId = trip.id;
+        _currentTripData = trip;
+        _selectedOriginLatLng = LatLng(originLat, originLng);
+        if (_selectedDestinationLatLng == null && trip.destinationLat != null && trip.destinationLng != null) {
+          _selectedDestinationLatLng = LatLng(trip.destinationLat!, trip.destinationLng!);
+        }
         _isSearchingDriver = true;
         _showActiveTripDetails = true;
       });
@@ -486,6 +735,8 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
         child: SearchBottomSheet(
           initialOrigin: initialOrigin ?? _selectedOrigin,
           initialDestination: initialDestination ?? _selectedDestination,
+          initialOriginLatLng: _selectedOriginLatLng,
+          initialDestinationLatLng: _selectedDestinationLatLng,
           onRouteSelected: (origin, originLatLng, dest, destLatLng) {
             Navigator.pop(context);
             _onRouteSelected(origin, originLatLng, dest, destLatLng);
@@ -517,7 +768,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (isTripActive) {
-          if (_currentTripData != null) {
+          if (_isDriverAssigned) {
+            _onCancelRide();
+          } else if (_isSearchingDriver) {
+            _onCancelRide();
+          } else if (_currentTripData != null) {
             setState(() => _showActiveTripDetails = false);
           } else {
             _onCancelRide();
@@ -850,9 +1105,15 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
       children: [
         Positioned.fill(
           child: MapWidget(
-            originLatLng: _selectedOriginLatLng,
-            destination: _selectedDestination,
-            destinationLatLng: _selectedDestinationLatLng,
+            originLatLng: _selectedOriginLatLng ??
+                (_currentTripData?.originLat != null && _currentTripData?.originLng != null
+                    ? LatLng(_currentTripData!.originLat!, _currentTripData!.originLng!)
+                    : null),
+            destination: _selectedDestination ?? _currentTripData?.destinationAddress,
+            destinationLatLng: _selectedDestinationLatLng ??
+                (_currentTripData?.destinationLat != null && _currentTripData?.destinationLng != null
+                    ? LatLng(_currentTripData!.destinationLat!, _currentTripData!.destinationLng!)
+                    : null),
             isPinPickerMode: _isPinPickerMode,
             onCameraMove: _onCameraMove,
             onRouteCalculated: (distance, duration) {
@@ -878,7 +1139,11 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             child: InkWell(
               customBorder: const CircleBorder(),
               onTap: () {
-                if (_currentTripData != null) {
+                if (_isDriverAssigned) {
+                  _onCancelRide();
+                } else if (_isSearchingDriver) {
+                  _onCancelRide();
+                } else if (_currentTripData != null) {
                   setState(() => _showActiveTripDetails = false);
                 } else {
                   _onCancelRide();
@@ -887,6 +1152,45 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
               child: const Padding(
                 padding: EdgeInsets.all(12),
                 child: Icon(Icons.arrow_back, color: AppColors.pureWhite, size: 24),
+              ),
+            ),
+          ),
+        ),
+
+        // Botón Asistencia 911 de Emergencia para el Pasajero
+        Positioned(
+          top: 16,
+          right: 16,
+          child: Material(
+            color: const Color(0xFFDC2626),
+            borderRadius: BorderRadius.circular(24),
+            elevation: 4,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () => EmergencyDialog.show(
+                context,
+                isDriver: false,
+                trip: _currentTripData,
+                currentAddress: _selectedOrigin,
+              ),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.shield, color: Colors.white, size: 18),
+                    SizedBox(width: 6),
+                    Text(
+                      '911 SOS',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 13,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -908,6 +1212,8 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
               : _isTripCompleted && _currentTripData != null
                   ? TripCompletedSheet(
                       trip: _currentTripData!,
+                      paymentResult: _lastPaymentResult,
+                      savedCard: _savedCard,
                       onDismiss: () {
                         setState(() {
                           _isTripCompleted = false;
@@ -918,6 +1224,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                           _selectedDestinationLatLng = null;
                           _routeDistance = null;
                           _routeDuration = null;
+                          _lastPaymentResult = null;
                         });
                       },
                     )
@@ -946,6 +1253,15 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                           destination: _selectedDestination!,
                           distanceMeters: _routeDistance,
                           durationSeconds: _routeDuration,
+                          selectedPaymentMethod: _selectedPaymentMethod,
+                          discountPercent: _userDiscountPercent,
+                          savedCard: _savedCard,
+                          onAddCard: _promptAddCard,
+                          onPaymentMethodChanged: (method) {
+                            setState(() {
+                              _selectedPaymentMethod = method;
+                            });
+                          },
                           onCancel: _onCancelRide,
                           onConfirm: _onConfirmRide,
                           onEditDestination: () {

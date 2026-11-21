@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../services/admin_service.dart';
+import '../../widgets/referrals_list_modal.dart';
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -160,6 +162,29 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                               color: Colors.transparent,
                               child: ListTile(
                                 contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                                onTap: () {
+                                  final rawUsers = user['usuarios_referidos'];
+                                  final rawCond = user['conductores_referidos'];
+                                  List<dynamic> uList = [];
+                                  List<dynamic> cList = [];
+                                  if (rawUsers is List) {
+                                    uList = List<dynamic>.from(rawUsers);
+                                  } else if (rawUsers is String) {
+                                    try { uList = List<dynamic>.from(jsonDecode(rawUsers)); } catch (_) {}
+                                  }
+                                  if (rawCond is List) {
+                                    cList = List<dynamic>.from(rawCond);
+                                  } else if (rawCond is String) {
+                                    try { cList = List<dynamic>.from(jsonDecode(rawCond)); } catch (_) {}
+                                  }
+
+                                  ReferralsListModal.show(
+                                    context,
+                                    title: 'Referidos de $name',
+                                    usuariosReferidos: uList,
+                                    conductoresReferidos: cList,
+                                  );
+                                },
                                 leading: CircleAvatar(
                                   radius: 24,
                                   backgroundColor: isAdmin
@@ -206,6 +231,45 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                     const SizedBox(height: 2),
                                     Text(email, style: const TextStyle(fontSize: 13, color: Colors.black87)),
                                     Text('Tel: $phone', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                  ],
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Builder(
+                                      builder: (_) {
+                                        final int totalUsr = (user['total_usuarios_referidos'] as num?)?.toInt() ?? 0;
+                                        final int totalCond = (user['total_conductores_referidos'] as num?)?.toInt() ?? 0;
+                                        final int totalRefs = totalUsr + totalCond;
+                                        if (totalRefs > 0) {
+                                          return Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFC7FF2E).withValues(alpha: 0.25),
+                                              borderRadius: BorderRadius.circular(10),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.people_alt, size: 12, color: Colors.black87),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  '$totalRefs ref',
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 11,
+                                                    color: Colors.black87,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        }
+                                        return const SizedBox.shrink();
+                                      },
+                                    ),
+                                    const SizedBox(width: 4),
+                                    const Icon(Icons.chevron_right, color: Colors.black26, size: 20),
                                   ],
                                 ),
                               ),

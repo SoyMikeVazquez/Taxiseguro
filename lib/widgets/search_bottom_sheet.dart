@@ -9,6 +9,8 @@ import 'package:geolocator/geolocator.dart';
 class SearchBottomSheet extends StatefulWidget {
   final String? initialOrigin;
   final String? initialDestination;
+  final LatLng? initialOriginLatLng;
+  final LatLng? initialDestinationLatLng;
   final void Function(String origin, LatLng? originLatLng, String destination, LatLng? destinationLatLng) onRouteSelected;
   final void Function(bool isOrigin) onOpenPinPicker;
   final bool isSearching;
@@ -18,6 +20,8 @@ class SearchBottomSheet extends StatefulWidget {
     super.key,
     this.initialOrigin,
     this.initialDestination,
+    this.initialOriginLatLng,
+    this.initialDestinationLatLng,
     required this.onRouteSelected,
     required this.onOpenPinPicker,
     required this.isSearching,
@@ -41,13 +45,16 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
   Timer? _debounceTimer;
   String _activeField = 'destination'; // 'origin' or 'destination'
   LatLng? _selectedOriginLatLng;
+  LatLng? _selectedDestinationLatLng;
   Position? _currentLocation;
 
   @override
   void initState() {
     super.initState();
-    _originController = TextEditingController(text: widget.initialOrigin ?? "");
+    _originController = TextEditingController(text: widget.initialOrigin ?? "Ubicación actual");
     _searchController = TextEditingController(text: widget.initialDestination ?? "");
+    _selectedOriginLatLng = widget.initialOriginLatLng ?? LocationService.lastKnownLocation;
+    _selectedDestinationLatLng = widget.initialDestinationLatLng;
 
     LocationService().getCurrentLocation().then((pos) {
       if (mounted && pos != null) {
@@ -64,6 +71,7 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
             altitudeAccuracy: 0,
             headingAccuracy: 0,
           );
+          _selectedOriginLatLng ??= pos;
         });
       }
     });
@@ -129,6 +137,9 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
   }
 
   void _selectPlace(MapboxPlace place) {
+    final effectiveOriginCoords = _selectedOriginLatLng ??
+        (_currentLocation != null ? LatLng(_currentLocation!.latitude, _currentLocation!.longitude) : LocationService.lastKnownLocation);
+
     if (_activeField == 'origin') {
       _originController.text = place.placeName;
       _selectedOriginLatLng = LatLng(place.latitude, place.longitude);
@@ -136,13 +147,15 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
         _mapboxSuggestions = [];
       });
       if (_searchController.text.trim().isNotEmpty) {
-        widget.onRouteSelected(_originController.text, _selectedOriginLatLng, _searchController.text, null);
+        widget.onRouteSelected(_originController.text, _selectedOriginLatLng, _searchController.text, _selectedDestinationLatLng);
       } else {
         _searchFocus.requestFocus();
       }
     } else {
+      _selectedDestinationLatLng = LatLng(place.latitude, place.longitude);
       _searchController.text = place.placeName;
-      widget.onRouteSelected(_originController.text, _selectedOriginLatLng, place.placeName, LatLng(place.latitude, place.longitude));
+      final originText = _originController.text.trim().isNotEmpty ? _originController.text : 'Ubicación actual';
+      widget.onRouteSelected(originText, effectiveOriginCoords, place.placeName, _selectedDestinationLatLng);
     }
   }
 
@@ -213,7 +226,9 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
                             onChanged: (val) => _onSearchChanged(val, 'origin'),
                             onSubmitted: (val) {
                               if (val.trim().isNotEmpty && _searchController.text.trim().isNotEmpty) {
-                                widget.onRouteSelected(val, _selectedOriginLatLng, _searchController.text, null);
+                                final effectiveOriginCoords = _selectedOriginLatLng ??
+                                    (_currentLocation != null ? LatLng(_currentLocation!.latitude, _currentLocation!.longitude) : LocationService.lastKnownLocation);
+                                widget.onRouteSelected(val, effectiveOriginCoords, _searchController.text, _selectedDestinationLatLng);
                               } else {
                                 _searchFocus.requestFocus();
                               }
@@ -286,7 +301,10 @@ class _SearchBottomSheetState extends State<SearchBottomSheet> {
                             ),
                             onSubmitted: (value) {
                               if (value.trim().isNotEmpty) {
-                                widget.onRouteSelected(_originController.text, _selectedOriginLatLng, value, null);
+                                final effectiveOriginCoords = _selectedOriginLatLng ??
+                                    (_currentLocation != null ? LatLng(_currentLocation!.latitude, _currentLocation!.longitude) : LocationService.lastKnownLocation);
+                                final originText = _originController.text.trim().isNotEmpty ? _originController.text : 'Ubicación actual';
+                                widget.onRouteSelected(originText, effectiveOriginCoords, value, _selectedDestinationLatLng);
                               }
                             },
                           ),

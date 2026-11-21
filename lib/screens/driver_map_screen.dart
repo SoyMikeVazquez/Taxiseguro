@@ -39,12 +39,50 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
   StreamSubscription<List<Trip>>? _pendingTripsSubscription;
   final Set<String> _notifiedTripIds = {};
   Timer? _disconnectionTimer;
+  DateTime? _lastGpsSyncTime;
+  LatLng? _lastGpsSyncLocation;
+
+  void _syncDriverGpsToSupabase(LatLng loc, {bool force = false}) {
+    if (!_isDriverActive || _driverId == null || _driverId!.isEmpty) return;
+
+    final now = DateTime.now();
+    // Limitar sincronización a mínimo 15 segundos o desplazamiento > 50 metros (salvo que sea forzada)
+    if (!force && _lastGpsSyncTime != null && now.difference(_lastGpsSyncTime!).inSeconds < 15) {
+      if (_lastGpsSyncLocation != null) {
+        final distanceMoved = Geolocator.distanceBetween(
+          _lastGpsSyncLocation!.latitude,
+          _lastGpsSyncLocation!.longitude,
+          loc.latitude,
+          loc.longitude,
+        );
+        if (distanceMoved < 50) return;
+      } else {
+        return;
+      }
+    }
+
+    _lastGpsSyncTime = now;
+    _lastGpsSyncLocation = loc;
+
+    Supabase.instance.client
+        .from('conductores')
+        .update({
+          'current_lat': loc.latitude,
+          'current_lng': loc.longitude,
+          'last_location_at': now.toUtc().toIso8601String(),
+        })
+        .eq('user_id', _driverId!)
+        .then((_) {})
+        .catchError((err) {
+          debugPrint('Aviso sincronizando coordenadas de conductor: $err');
+        });
+  }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _disconnectionTimer?.cancel();
-    _checkAndDeactivateOnExit();
+    // No desconectar en dispose para permitir navegación interna y recepción en segundo plano
     _locationSubscription?.cancel();
     _pendingTripsSubscription?.cancel();
     super.dispose();
@@ -140,6 +178,9 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
         try {
           _mapController.move(newLoc, _mapController.camera.zoom);
         } catch (_) {}
+        if (_isDriverActive) {
+          _syncDriverGpsToSupabase(newLoc);
+        }
       }
     });
 
@@ -211,6 +252,7 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
             _isDriverActive = isActivo;
             if (_isDriverActive) {
               _startListeningToPendingTrips();
+              _syncDriverGpsToSupabase(_currentLocation, force: true);
             } else {
               _stopListeningToPendingTrips();
             }
@@ -263,13 +305,20 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
     final previousStatus = _isDriverActive;
     setState(() => _isDriverActive = value);
     try {
-      // Actualizar isActivo y estatus en la tabla de conductores
+      // Actualizar isActivo y estatus en la tabla de conductores, guardando la ubicación GPS de inmediato
+      final updateData = <String, dynamic>{
+        'isActivo': value,
+        'estatus': value ? 'activo' : 'inactivo',
+      };
+      if (value) {
+        updateData['current_lat'] = _currentLocation.latitude;
+        updateData['current_lng'] = _currentLocation.longitude;
+        updateData['last_location_at'] = DateTime.now().toUtc().toIso8601String();
+      }
+
       await Supabase.instance.client
           .from('conductores')
-          .update({
-            'isActivo': value,
-            'estatus': value ? 'activo' : 'inactivo',
-          })
+          .update(updateData)
           .eq('user_id', _driverId!);
           
       if (value) {
@@ -277,6 +326,7 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
         _startListeningToPendingTrips();
         // Tomar su registro del día de forma inicial en horarios_conductores
         await DriverShiftService().recordConnection(_driverId!);
+        _syncDriverGpsToSupabase(_currentLocation, force: true);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -289,6 +339,8 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
       } else {
         BackgroundServiceHelper.stopService();
         _stopListeningToPendingTrips();
+        _lastGpsSyncTime = null;
+        _lastGpsSyncLocation = null;
         await DriverShiftService().recordDisconnection(_driverId!);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -346,6 +398,43 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
                 'Tarifa estimada: \$${trip.fare!.toStringAsFixed(2)}',
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green),
               ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: trip.paymentMethod == 'mercadopago'
+                      ? const Color(0xFF009EE3).withOpacity(0.12)
+                      : Colors.green.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      trip.paymentMethod == 'mercadopago'
+                          ? Icons.credit_card
+                          : Icons.payments_outlined,
+                      size: 16,
+                      color: trip.paymentMethod == 'mercadopago'
+                          ? const Color(0xFF009EE3)
+                          : Colors.green[800],
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      trip.paymentMethod == 'mercadopago'
+                          ? 'Pago en Linea (Mercado Pago)'
+                          : 'Pago en Efectivo (Cobrar al fin)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: trip.paymentMethod == 'mercadopago'
+                            ? const Color(0xFF009EE3)
+                            : Colors.green[800],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ],
         ),
@@ -386,7 +475,14 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
             status: 'accepted',
           );
           
-          BackgroundServiceHelper.startDriverTrip('Nuevo Viaje Aceptado', 'Dirígete al punto de recogida');
+          final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)} MXN' : null;
+          BackgroundServiceHelper.startDriverTrip(
+            'Nuevo Viaje Aceptado',
+            'Dirigete al punto de recogida',
+            origin: trip.originAddress,
+            destination: trip.destinationAddress,
+            fare: fareStr,
+          );
 
           Navigator.of(context).push(
             MaterialPageRoute(
@@ -617,43 +713,44 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
           // 4. Panel Inferior de Viajes (DraggableBottomSheet o Stacked container)
           if (_activeTrip != null)
             Positioned(
-              bottom: 120, // Por encima del menú liquid glass
+              bottom: 140, // Elevado para evitar colisión con el menú inferior
               left: 16,
               right: 16,
               child: _buildActiveTripCard().animate().fade(duration: 600.ms, delay: 200.ms).slideY(begin: 0.5, end: 0, duration: 600.ms, delay: 200.ms, curve: Curves.easeOutQuad),
             )
           else if (_isDriverActive)
             Positioned(
-              bottom: 120, // Por encima del menú liquid glass
+              bottom: 140, // Elevado para evitar colisión con el menú inferior
               left: 0,
               right: 0,
               child: _buildPendingTripsList().animate().fade(duration: 600.ms, delay: 200.ms).slideY(begin: 0.5, end: 0, duration: 600.ms, delay: 200.ms, curve: Curves.easeOutQuad),
             )
           else
             Positioned(
-              bottom: 120,
+              bottom: 140, // Elevado para evitar colisión con el menú inferior
               left: 16,
               right: 16,
               child: Container(
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.95),
+                  color: const Color(0xFF141414),
                   borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
                   boxShadow: const [
-                    BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, 10)),
+                    BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10)),
                   ],
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.bedtime, size: 48, color: Colors.indigo[300]),
+                    const Icon(Icons.bedtime, size: 48, color: Colors.white38),
                     const SizedBox(height: 16),
-                    const Text('Estás desconectado', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    const Text('Estás desconectado', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
                     const SizedBox(height: 8),
                     const Text(
                       'Ponte en línea para recibir solicitudes de viaje cercanas.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: TextStyle(color: Colors.white60),
                     ),
                   ],
                 ),
@@ -674,14 +771,11 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
       child: Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFF1E3C72), Color(0xFF2A5298)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          color: const Color(0xFF141414),
           borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
           boxShadow: const [
-            BoxShadow(color: Color(0x4D1E3C72), blurRadius: 16, offset: Offset(0, 8)),
+            BoxShadow(color: Colors.black54, blurRadius: 16, offset: Offset(0, 8)),
           ],
         ),
         child: Column(
@@ -691,8 +785,11 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
               children: [
                 Container(
                   padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                  child: const Icon(Icons.navigation, color: Colors.white, size: 24),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFD600).withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.navigation, color: Color(0xFFFFD600), size: 24),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -723,10 +820,11 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
             height: 180,
             margin: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.95),
+              color: const Color(0xFF141414),
               borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
             ),
-            child: const Center(child: CircularProgressIndicator(color: Colors.black)),
+            child: const Center(child: CircularProgressIndicator(color: Color(0xFFFFD600))),
           );
         }
 
@@ -761,17 +859,18 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
             margin: const EdgeInsets.symmetric(horizontal: 16),
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.95),
+              color: const Color(0xFF141414),
               borderRadius: BorderRadius.circular(24),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, 10))],
+              border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
+              boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10))],
             ),
-            child: Center(
+            child: const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.radar, size: 48, color: Colors.black26),
-                  const SizedBox(height: 12),
-                  Text('Buscando viajes cercanos...', style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
+                  Icon(Icons.radar, size: 48, color: Color(0xFFFFD600)),
+                  SizedBox(height: 12),
+                  Text('Buscando viajes cercanos...', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                 ],
               ),
             ),
@@ -791,9 +890,10 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
                 margin: const EdgeInsets.only(right: 16, bottom: 8),
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: const Color(0xFF141414),
                   borderRadius: BorderRadius.circular(24),
-                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 15, offset: Offset(0, 8))],
+                  border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
+                  boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 18, offset: Offset(0, 8))],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -803,24 +903,28 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
                       children: [
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(color: Colors.amber[100], borderRadius: BorderRadius.circular(12)),
-                          child: const Text('Nuevo Viaje', style: TextStyle(color: Colors.deepOrange, fontSize: 12, fontWeight: FontWeight.bold)),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF262626),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFFFD600).withOpacity(0.4), width: 1),
+                          ),
+                          child: const Text('Nuevo Viaje', style: TextStyle(color: Color(0xFFFFD600), fontSize: 12, fontWeight: FontWeight.bold)),
                         ),
                         if (trip.fare != null)
-                          Text('\$${trip.fare!.toStringAsFixed(2)}', style: TextStyle(color: Colors.green[700], fontSize: 18, fontWeight: FontWeight.bold))
+                          Text('\$${trip.fare!.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))
                         else
-                          const Text('Por cotizar', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                          const Text('Por cotizar', style: TextStyle(color: Colors.white70, fontSize: 14)),
                       ],
                     ),
                     const Spacer(),
                     Row(
                       children: [
-                        const Icon(Icons.location_on, size: 20, color: Colors.redAccent),
+                        const Icon(Icons.location_on, size: 20, color: Color(0xFFFFD600)),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             trip.destinationAddress,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -834,12 +938,12 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
                       child: ElevatedButton(
                         onPressed: () => _acceptTrip(trip),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFC7FF2E), // Electric Green
+                          backgroundColor: const Color(0xFFFFD600), // Taxi Yellow
                           foregroundColor: Colors.black,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                           elevation: 0,
                         ),
-                        child: const Text('Aceptar Viaje', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold)),
+                        child: const Text('Aceptar Viaje', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
                       ),
                     ),
                   ],

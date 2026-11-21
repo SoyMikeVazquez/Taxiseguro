@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/trip.dart';
 import '../services/driver_profile_service.dart';
-import '../services/trip_service.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'emergency_dialog.dart';
 
 class ActiveTripSheet extends StatefulWidget {
   final String driverName;
@@ -39,9 +40,8 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
   String _plateNumber = '';
   String _rating = '5.0';
   String? _driverPhoto;
+  String? _driverPhone;
   bool _isLoadingDriver = true;
-  Timer? _cancelTimer;
-  bool _canCancelWithoutPenalty = false;
   Timer? _waitTimer;
   int _remainingSeconds = 7 * 60;
 
@@ -53,13 +53,11 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     _plateNumber = widget.plateNumber;
     _rating = widget.rating;
     _fetchDriverInfo();
-    _startCancelTimer();
     _startWaitTimerIfNeeded();
   }
 
   @override
   void dispose() {
-    _cancelTimer?.cancel();
     _waitTimer?.cancel();
     super.dispose();
   }
@@ -95,26 +93,7 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     }
   }
 
-  void _startCancelTimer() {
-    _checkCancelStatus();
-    _cancelTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _checkCancelStatus();
-    });
-  }
 
-  void _checkCancelStatus() {
-    if (widget.trip?.createdAt != null) {
-      final now = DateTime.now();
-      final difference = now.difference(widget.trip!.createdAt!);
-      if (difference.inMinutes >= 5) {
-        if (!_canCancelWithoutPenalty && mounted) {
-          setState(() {
-            _canCancelWithoutPenalty = true;
-          });
-        }
-      }
-    }
-  }
 
   @override
   void didUpdateWidget(ActiveTripSheet oldWidget) {
@@ -140,6 +119,7 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
       setState(() {
         _driverName = profile['nombre_completo'] ?? profile['nombre'] ?? widget.driverName;
         _driverPhoto = profile['imagen_perfil'] as String?;
+        _driverPhone = (profile['telefono'] ?? profile['celular'] ?? profile['phone'])?.toString();
         final auto = profile['modelo_auto'] ?? 'Auto';
         final color = profile['color_auto'] ?? '';
         _vehicleInfo = color.isNotEmpty ? '$auto • $color' : auto;
@@ -149,6 +129,44 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
       });
     } else if (mounted) {
       setState(() => _isLoadingDriver = false);
+    }
+  }
+
+  Future<void> _callDriver() async {
+    final messenger = ScaffoldMessenger.of(context);
+    String? phone = _driverPhone;
+
+    if ((phone == null || phone.trim().isEmpty) && widget.trip?.driverId != null) {
+      try {
+        final service = DriverProfileService();
+        final profile = await service.getDriverProfile(widget.trip!.driverId!);
+        phone = (profile?['telefono'] ?? profile?['celular'] ?? profile?['phone'])?.toString();
+      } catch (_) {}
+    }
+
+    if (phone != null && phone.trim().isNotEmpty) {
+      final cleanPhone = phone.replaceAll(RegExp(r'[^\d+]'), '');
+      final Uri uri = Uri.parse('tel:$cleanPhone');
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri);
+          return;
+        } else {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (e) {
+        debugPrint('Error llamando al conductor: $e');
+      }
+    }
+
+    if (mounted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Número de teléfono del conductor no disponible.'),
+          backgroundColor: Colors.black87,
+        ),
+      );
     }
   }
 
@@ -250,11 +268,10 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
                 subtitle: const Text('Llama a los servicios de emergencia locales'),
                 onTap: () {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Conectando con emergencia 911...'),
-                      backgroundColor: Colors.red,
-                    ),
+                  EmergencyDialog.show(
+                    context,
+                    isDriver: false,
+                    trip: widget.trip,
                   );
                 },
               ),
@@ -519,11 +536,7 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
                 _buildActionButton(
                   icon: Icons.phone,
                   label: 'Llamar',
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Llamando al conductor...')),
-                    );
-                  },
+                  onTap: _callDriver,
                 ),
                 _buildActionButton(
                   icon: Icons.chat_bubble_outline,
@@ -539,67 +552,30 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
                   label: 'Seguridad',
                   onTap: () => _showSecurityModal(context),
                 ),
+                _buildActionButton(
+                  icon: Icons.emergency,
+                  label: '911 SOS',
+                  backgroundColor: const Color(0xFFFEF2F2),
+                  iconColor: const Color(0xFFDC2626),
+                  textColor: const Color(0xFFDC2626),
+                  onTap: () => EmergencyDialog.show(
+                    context,
+                    isDriver: false,
+                    trip: widget.trip,
+                  ),
+                ),
               ],
             ),
 
-            if (_canCancelWithoutPenalty && widget.trip != null && widget.trip!.status == 'accepted') ...[
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () => _cancelTripByPassenger(context),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: const Text(
-                    'Cancelar Viaje (Sin Penalización)',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
-                ),
-              ),
-            ],
-
+            // El pasajero no puede cancelar el viaje una vez que el conductor ya fue asignado.
+            // La cancelación en esta etapa corresponde exclusivamente al conductor o a soporte.
           ],
         ),
       ),
     );
   }
 
-  void _cancelTripByPassenger(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('¿Cancelar Viaje?'),
-          content: const Text('Han pasado más de 5 minutos, por lo que puedes cancelar sin penalización.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Mantener Viaje'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context); // Close dialog
-                if (widget.trip?.id != null) {
-                  final service = TripService();
-                  await service.cancelTrip(widget.trip!.id!, cancelReason: 'Cancelado por el pasajero después de 5 minutos');
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Viaje cancelado exitosamente.')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Sí, Cancelar', style: TextStyle(color: Colors.red)),
-            ),
-          ],
-        );
-      },
-    );
-  }
+
 
   Widget _buildUberPinBanner(int? pinCode) {
     final pinString = pinCode?.toString().padLeft(5, '0');
@@ -621,7 +597,7 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
                 fontFamily: 'Google Sans',
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFF1E293B),
+                color: Colors.black,
               ),
             ),
           ),
@@ -705,26 +681,29 @@ class _ActiveTripSheetState extends State<ActiveTripSheet> {
     required IconData icon,
     required String label,
     required VoidCallback onTap,
+    Color? backgroundColor,
+    Color? iconColor,
+    Color? textColor,
   }) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.grey[100],
+          color: backgroundColor ?? Colors.grey[100],
           borderRadius: BorderRadius.circular(14),
         ),
         child: Column(
           children: [
-            Icon(icon, size: 22, color: Colors.black87),
+            Icon(icon, size: 22, color: iconColor ?? Colors.black87),
             const SizedBox(height: 4),
             Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.black87,
+                color: textColor ?? Colors.black87,
               ),
             ),
           ],

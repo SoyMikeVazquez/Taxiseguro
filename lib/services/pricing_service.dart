@@ -235,12 +235,25 @@ class PricingService {
   /// - Base: Tabulador oficial por KM (siempre vigente)
   /// - Multiplicador 1: Mapa de calor / demanda (si está activo)
   /// - Multiplicador 2: Círculos manuales del admin (si están activos)
+  /// - Descuento: Descuento del 20% en viajes para pasajeros con referido
+  /// - Ajuste por método de pago: +$4.00 dinámico exclusivo para pagos con tarjeta
   static double calculateDynamicPrice(
     double distanceMeters,
     double durationSeconds, {
     LatLng? origin,
+    String? paymentMethod,
+    double discountPercent = 0.0,
   }) {
-    if (distanceMeters <= 0 && durationSeconds <= 0) return tarifaMinima;
+    if (distanceMeters <= 0 && durationSeconds <= 0) {
+      double baseMin = tarifaMinima;
+      if (discountPercent > 0.0) {
+        baseMin -= (baseMin * (discountPercent / 100.0));
+      }
+      final double baseMinima = (paymentMethod == 'tarjeta' || paymentMethod == 'mercadopago')
+          ? (baseMin + 4.0)
+          : baseMin;
+      return double.parse(baseMinima.toStringAsFixed(2));
+    }
 
     final double distanceKm = distanceMeters / 1000.0;
     final double durationMin = durationSeconds / 60.0;
@@ -278,7 +291,20 @@ class PricingService {
       }
     }
 
-    final double tarifaFinal = tarifaBase * multiplicadorDemanda * multiplicadorZonasManuales;
+    double tarifaFinal = tarifaBase * multiplicadorDemanda * multiplicadorZonasManuales;
+
+    // Descuento por sistema de referidos para pasajeros (ej. 20%)
+    if (discountPercent > 0.0) {
+      final double discountAmount = tarifaFinal * (discountPercent / 100.0);
+      tarifaFinal -= discountAmount;
+      if (tarifaFinal < 0) tarifaFinal = 0.0;
+    }
+
+    // Ajuste dinámico de tarifa para pagos con tarjeta (+4.00 MXN)
+    if (paymentMethod == 'tarjeta' || paymentMethod == 'mercadopago') {
+      tarifaFinal += 4.00;
+    }
+
     return double.parse(tarifaFinal.toStringAsFixed(2));
   }
 

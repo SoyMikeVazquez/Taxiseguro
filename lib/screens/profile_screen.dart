@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/rating_service.dart';
+import '../widgets/referrals_list_modal.dart';
 
 class ProfileScreen extends StatefulWidget {
   final bool showBackButton;
@@ -25,6 +28,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _selectedPaymentMethod = 'Efectivo';
   String? _profileImageUrl;
   double _userRating = 5.0;
+  double _userDiscount = 0.0;
+  int _totalUsuariosReferidos = 0;
+  int _totalConductoresReferidos = 0;
+  List<dynamic> _usuariosReferidos = [];
+  List<dynamic> _conductoresReferidos = [];
 
   // Lista simulada de métodos de pago guardados
   final List<Map<String, String>> _paymentMethods = [
@@ -80,6 +88,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
           }
           if (response['imagen_perfil'] != null && (response['imagen_perfil'] as String).isNotEmpty) {
             _profileImageUrl = response['imagen_perfil'];
+          } else if (response['fotodeperfil'] != null && (response['fotodeperfil'] as String).isNotEmpty) {
+            _profileImageUrl = response['fotodeperfil'];
+          }
+
+          final disc = (response['descuento_siguiente_viaje'] as num?)?.toDouble() ?? 0.0;
+          final count = (response['viajes_con_descuento'] as num?)?.toInt() ?? 0;
+          _userDiscount = (disc > 0.0 || count > 0) ? (disc > 0.0 ? disc : 20.0) : 0.0;
+
+          _totalUsuariosReferidos = (response['total_usuarios_referidos'] as num?)?.toInt() ?? 0;
+          _totalConductoresReferidos = (response['total_conductores_referidos'] as num?)?.toInt() ?? 0;
+
+          final rawUsers = response['usuarios_referidos'];
+          if (rawUsers is List) {
+            _usuariosReferidos = List<dynamic>.from(rawUsers);
+          } else if (rawUsers is String) {
+            try { _usuariosReferidos = List<dynamic>.from(jsonDecode(rawUsers)); } catch (_) {}
+          }
+          if (_totalUsuariosReferidos == 0 && _usuariosReferidos.isNotEmpty) {
+            _totalUsuariosReferidos = _usuariosReferidos.length;
+          }
+
+          final rawCond = response['conductores_referidos'];
+          if (rawCond is List) {
+            _conductoresReferidos = List<dynamic>.from(rawCond);
+          } else if (rawCond is String) {
+            try { _conductoresReferidos = List<dynamic>.from(jsonDecode(rawCond)); } catch (_) {}
+          }
+          if (_totalConductoresReferidos == 0 && _conductoresReferidos.isNotEmpty) {
+            _totalConductoresReferidos = _conductoresReferidos.length;
           }
         });
       }
@@ -475,6 +512,281 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                             keyboardType: TextInputType.phone,
                           ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 24),
+
+                    // Tarjeta de Referidos y Descuentos
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF222222), Color(0xFF141414)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.1), width: 1),
+                        boxShadow: const [
+                          BoxShadow(color: Color(0x2F000000), blurRadius: 18, offset: Offset(0, 6)),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFC7FF2E).withValues(alpha: 0.15),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.card_giftcard_rounded, color: Color(0xFFC7FF2E), size: 24),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Invita a un amigo y gana',
+                                      style: TextStyle(
+                                        fontFamily: 'Google Sans',
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      '20% de descuento en tu siguiente viaje',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFFC7FF2E),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          Text(
+                            'Comparte tu número con amigos. Al registrarse obtienen 20% de descuento en su primer viaje y tú recibirás 20% de descuento en tu siguiente viaje.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              height: 1.4,
+                              color: Colors.grey[300],
+                            ),
+                          ),
+                          if (_userDiscount > 0) ...[
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFC7FF2E).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: const Color(0xFFC7FF2E).withValues(alpha: 0.5)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.check_circle_rounded, color: Color(0xFFC7FF2E), size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      '¡Tienes ${_userDiscount.toInt()}% de descuento activo para tu próximo viaje!',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.phone_iphone_rounded, color: Colors.white70, size: 20),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Tu número de referido',
+                                        style: TextStyle(color: Colors.white54, fontSize: 11),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        _phoneController.text.trim().isNotEmpty
+                                            ? _phoneController.text.trim().replaceAll(RegExp(r'\D'), '')
+                                            : 'Registra tu teléfono',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: () {
+                                    final cleanDigits = _phoneController.text.trim().replaceAll(RegExp(r'\D'), '');
+                                    if (cleanDigits.isEmpty) return;
+                                    Clipboard.setData(ClipboardData(text: cleanDigits));
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Número copiado al portapapeles. ¡Compártelo con tus amigos!'),
+                                        behavior: SnackBarBehavior.floating,
+                                        backgroundColor: Colors.black87,
+                                      ),
+                                    );
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFC7FF2E),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.copy_rounded, color: Colors.black, size: 15),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Copiar',
+                                          style: TextStyle(
+                                            color: Colors.black,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Métricas de referidos
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.05),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.people_outline, color: Color(0xFFC7FF2E), size: 18),
+                                      const SizedBox(width: 8),
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '$_totalUsuariosReferidos',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          const Text(
+                                            'Pasajeros',
+                                            style: TextStyle(color: Colors.white60, fontSize: 11),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.05),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.local_taxi_outlined, color: Color(0xFFC7FF2E), size: 18),
+                                      const SizedBox(width: 8),
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '$_totalConductoresReferidos',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          const Text(
+                                            'Conductores',
+                                            style: TextStyle(color: Colors.white60, fontSize: 11),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          if (_usuariosReferidos.isNotEmpty || _conductoresReferidos.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(color: Colors.white.withValues(alpha: 0.25)),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
+                                icon: const Icon(Icons.visibility_outlined, size: 16, color: Color(0xFFC7FF2E)),
+                                label: const Text(
+                                  'Ver lista de mis referidos',
+                                  style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                                onPressed: () {
+                                  ReferralsListModal.show(
+                                    context,
+                                    title: 'Mis Referidos',
+                                    usuariosReferidos: _usuariosReferidos,
+                                    conductoresReferidos: _conductoresReferidos,
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),

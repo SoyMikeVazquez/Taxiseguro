@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:live_activities/live_activities.dart';
+import 'package:live_activities/models/activity_update.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 Future<void> initializeBackgroundService() async {
@@ -69,33 +70,79 @@ void onStart(ServiceInstance service) async {
     if (event != null) {
       final String title = event['title'] ?? 'TaxiSeguro';
       final String body = event['body'] ?? 'Actualización de viaje';
+      final String? driverName = event['driverName'];
+      final String? vehicleInfo = event['vehicleInfo'];
+      final String? plateNumber = event['plateNumber'];
+      final String? pinCode = event['pinCode'];
+      final String? destination = event['destination'];
+      final String? fare = event['fare'];
+      final bool isCancelled = event['isCancelled'] == true ||
+          body.toLowerCase().contains('cancel') ||
+          title.toLowerCase().contains('cancel');
 
-      // Update Foreground Service info on Android
+      // Construcción del contenido enriquecido para Android (BigTextStyleInformation)
+      final List<String> details = [];
+      if (driverName != null && driverName.isNotEmpty) {
+        details.add('Conductor: $driverName');
+      }
+      if (vehicleInfo != null && vehicleInfo.isNotEmpty) {
+        final plateText = (plateNumber != null && plateNumber.isNotEmpty) ? ' ($plateNumber)' : '';
+        details.add('Vehiculo: $vehicleInfo$plateText');
+      }
+      if (pinCode != null && pinCode.isNotEmpty) {
+        details.add('PIN de Abordaje Seguro: $pinCode');
+      }
+      if (destination != null && destination.isNotEmpty) {
+        details.add('Destino: $destination');
+      }
+      if (fare != null && fare.isNotEmpty) {
+        details.add('Tarifa: $fare');
+      }
+
+      final String bigText = details.isNotEmpty
+          ? '$body\n\n${details.join('\n')}'
+          : body;
+
+      final Color themeColor = isCancelled ? const Color(0xFFDC2626) : const Color(0xFFC7FF2E);
+
+      // Actualizar información en Android Foreground Service
       if (Platform.isAndroid && service is AndroidServiceInstance) {
         service.setForegroundNotificationInfo(
           title: title,
-          content: body,
+          content: details.isNotEmpty ? '${details.first} • $body' : body,
         );
       }
 
-      // Display alert notification
+      // Notificación enriquecida en Android (Visible en pantalla de bloqueo y barra de estado)
       flutterLocalNotificationsPlugin.show(
         id: 888,
         title: title,
         body: body,
-        notificationDetails: const NotificationDetails(
+        notificationDetails: NotificationDetails(
           android: AndroidNotificationDetails(
             'taxiseguro_foreground',
             'Alertas de Viaje TaxiSeguro',
+            channelDescription: 'Seguimiento en vivo y estado del viaje en TaxiSeguro.',
             icon: '@mipmap/launcher_icon',
-            ongoing: true,
+            ongoing: !isCancelled,
+            autoCancel: isCancelled,
+            color: themeColor,
+            colorized: isCancelled, // Resalta la notificación completamente en ROJO al cancelarse
             importance: Importance.max,
             priority: Priority.max,
             showWhen: true,
+            category: AndroidNotificationCategory.status,
+            visibility: NotificationVisibility.public,
+            subText: isCancelled ? 'CANCELADO' : (pinCode != null ? 'PIN: $pinCode' : 'TaxiSeguro En Vivo'),
+            styleInformation: BigTextStyleInformation(
+              bigText,
+              contentTitle: title,
+              summaryText: isCancelled ? 'VIAJE CANCELADO' : (pinCode != null ? 'PIN: $pinCode' : 'TaxiSeguro En Vivo'),
+            ),
             playSound: true,
             enableVibration: true,
           ),
-          iOS: DarwinNotificationDetails(),
+          iOS: const DarwinNotificationDetails(),
         ),
       );
     }
@@ -109,6 +156,7 @@ void onStart(ServiceInstance service) async {
 class BackgroundServiceHelper {
   static final _liveActivitiesPlugin = LiveActivities();
   static String? _liveActivityId;
+  static Timer? _cancelDismissTimer;
 
   static Future<bool> requestNotificationPermission() async {
     if (!Platform.isAndroid && !Platform.isIOS) return true;
@@ -142,7 +190,17 @@ class BackgroundServiceHelper {
     }
   }
 
-  static void updateNotification(String title, String body) {
+  static void updateNotification(
+    String title,
+    String body, {
+    String? driverName,
+    String? vehicleInfo,
+    String? plateNumber,
+    String? pinCode,
+    String? destination,
+    String? fare,
+    bool isCancelled = false,
+  }) {
     if (!Platform.isAndroid && !Platform.isIOS) return;
     
     final service = FlutterBackgroundService();
@@ -151,27 +209,109 @@ class BackgroundServiceHelper {
       {
         'title': title,
         'body': body,
+        if (driverName != null) 'driverName': driverName,
+        if (vehicleInfo != null) 'vehicleInfo': vehicleInfo,
+        if (plateNumber != null) 'plateNumber': plateNumber,
+        if (pinCode != null) 'pinCode': pinCode,
+        if (destination != null) 'destination': destination,
+        if (fare != null) 'fare': fare,
+        'isCancelled': isCancelled,
       },
     );
   }
 
+  /// Muestra la notificacion de cancelacion en ROJO de alta atencion tanto en iOS (Live Activity)
+  /// como en Android (Notificacion persistente colorizada) durante unos momentos antes de cerrarla.
+  static Future<void> notifyTripCancelled({
+    String reason = 'Tu viaje ha sido cancelado.',
+    Duration displayDuration = const Duration(seconds: 6),
+  }) async {
+    _cancelDismissTimer?.cancel();
+
+    // 1. Notificación en Android en color ROJO
+    updateNotification(
+      'Viaje Cancelado',
+      reason,
+      isCancelled: true,
+    );
+
+    // 2. Live Activity en iOS con badge y tema ROJO
+    if (Platform.isIOS) {
+      try {
+        final data = <String, dynamic>{
+          'title': 'Viaje Cancelado',
+          'status': 'Cancelado',
+        };
+        if (_liveActivityId != null) {
+          await _liveActivitiesPlugin.updateActivity(_liveActivityId!, data);
+        } else {
+          await _liveActivitiesPlugin.init(appGroupId: 'group.com.taxiseguro.app');
+          _liveActivityId = await _liveActivitiesPlugin.createActivity(
+            'taxiseguro_trip',
+            data,
+            iOSEnableRemoteUpdates: true,
+          );
+        }
+      } catch (e) {
+        print('Error actualizando Live Activity a cancelado: $e');
+      }
+    }
+
+    // 3. Mantener visible durante unos segundos para que el usuario preste atención, luego remover
+    _cancelDismissTimer = Timer(displayDuration, () async {
+      stopService();
+      if (Platform.isIOS && _liveActivityId != null) {
+        try {
+          await _liveActivitiesPlugin.endActivity(_liveActivityId!);
+          _liveActivityId = null;
+        } catch (_) {}
+      }
+    });
+  }
+
   // --- Passenger Specific Methods ---
 
-  static Future<void> startPassengerTrip(String title, String body) async {
+  static Future<void> startPassengerTrip(
+    String title,
+    String body, {
+    String? driverName,
+    String? vehicleInfo,
+    String? plateNumber,
+    String? pinCode,
+    String? destination,
+    String? fare,
+  }) async {
     await startService();
-    updateNotification(title, body);
+    updateNotification(
+      title,
+      body,
+      driverName: driverName,
+      vehicleInfo: vehicleInfo,
+      plateNumber: plateNumber,
+      pinCode: pinCode,
+      destination: destination,
+      fare: fare,
+    );
 
     if (Platform.isIOS) {
       try {
         await _liveActivitiesPlugin.init(
-          appGroupId: 'group.com.taxiseguro.app', // You may need an App Group if dealing with widgets
+          appGroupId: 'group.com.taxiseguro.app',
         );
+        final data = <String, dynamic>{
+          'title': title,
+          'status': body,
+          if (driverName != null) 'driverName': driverName,
+          if (vehicleInfo != null) 'vehicleInfo': vehicleInfo,
+          if (plateNumber != null) 'plateNumber': plateNumber,
+          if (pinCode != null) 'pinCode': pinCode,
+          if (destination != null) 'destination': destination,
+          if (fare != null) 'fare': fare,
+        };
         _liveActivityId = await _liveActivitiesPlugin.createActivity(
           'taxiseguro_trip',
-          {
-            'title': title,
-            'status': body,
-          },
+          data,
+          iOSEnableRemoteUpdates: true,
         );
       } catch (e) {
         print('Error starting Live Activity: $e');
@@ -179,15 +319,49 @@ class BackgroundServiceHelper {
     }
   }
 
-  static Future<void> updateTripStatus(String title, String body) async {
-    updateNotification(title, body);
+  static Future<void> updateTripStatus(
+    String title,
+    String body, {
+    String? driverName,
+    String? vehicleInfo,
+    String? plateNumber,
+    String? pinCode,
+    String? destination,
+    String? fare,
+  }) async {
+    updateNotification(
+      title,
+      body,
+      driverName: driverName,
+      vehicleInfo: vehicleInfo,
+      plateNumber: plateNumber,
+      pinCode: pinCode,
+      destination: destination,
+      fare: fare,
+    );
     
-    if (Platform.isIOS && _liveActivityId != null) {
+    if (Platform.isIOS) {
       try {
-        await _liveActivitiesPlugin.updateActivity(_liveActivityId!, {
+        final data = <String, dynamic>{
           'title': title,
           'status': body,
-        });
+          if (driverName != null) 'driverName': driverName,
+          if (vehicleInfo != null) 'vehicleInfo': vehicleInfo,
+          if (plateNumber != null) 'plateNumber': plateNumber,
+          if (pinCode != null) 'pinCode': pinCode,
+          if (destination != null) 'destination': destination,
+          if (fare != null) 'fare': fare,
+        };
+        if (_liveActivityId != null) {
+          await _liveActivitiesPlugin.updateActivity(_liveActivityId!, data);
+        } else {
+          await _liveActivitiesPlugin.init(appGroupId: 'group.com.taxiseguro.app');
+          _liveActivityId = await _liveActivitiesPlugin.createActivity(
+            'taxiseguro_trip',
+            data,
+            iOSEnableRemoteUpdates: true,
+          );
+        }
       } catch (e) {
         print('Error updating Live Activity: $e');
       }
@@ -209,21 +383,44 @@ class BackgroundServiceHelper {
 
   // --- Driver Specific Methods ---
 
-  static Future<void> startDriverTrip(String title, String body) async {
+  static Future<void> startDriverTrip(
+    String title,
+    String body, {
+    String? passengerName,
+    String? origin,
+    String? destination,
+    String? fare,
+    String? pinCode,
+  }) async {
     await startService();
-    updateNotification(title, body);
+    updateNotification(
+      title,
+      body,
+      driverName: passengerName,
+      vehicleInfo: origin,
+      destination: destination,
+      fare: fare,
+      pinCode: pinCode,
+    );
 
     if (Platform.isIOS) {
       try {
         await _liveActivitiesPlugin.init(
           appGroupId: 'group.com.taxiseguro.app', 
         );
+        final data = <String, dynamic>{
+          'title': title,
+          'status': body,
+          if (passengerName != null) 'driverName': passengerName,
+          if (origin != null) 'vehicleInfo': origin,
+          if (destination != null) 'destination': destination,
+          if (fare != null) 'fare': fare,
+          if (pinCode != null) 'pinCode': pinCode,
+        };
         _liveActivityId = await _liveActivitiesPlugin.createActivity(
           'taxiseguro_trip',
-          {
-            'title': title,
-            'status': body,
-          },
+          data,
+          iOSEnableRemoteUpdates: true,
         );
       } catch (e) {
         print('Error starting Driver Live Activity: $e');
@@ -231,15 +428,46 @@ class BackgroundServiceHelper {
     }
   }
 
-  static Future<void> updateDriverTripStatus(String title, String body) async {
-    updateNotification(title, body);
+  static Future<void> updateDriverTripStatus(
+    String title,
+    String body, {
+    String? passengerName,
+    String? origin,
+    String? destination,
+    String? fare,
+    String? pinCode,
+  }) async {
+    updateNotification(
+      title,
+      body,
+      driverName: passengerName,
+      vehicleInfo: origin,
+      destination: destination,
+      fare: fare,
+      pinCode: pinCode,
+    );
     
-    if (Platform.isIOS && _liveActivityId != null) {
+    if (Platform.isIOS) {
       try {
-        await _liveActivitiesPlugin.updateActivity(_liveActivityId!, {
+        final data = <String, dynamic>{
           'title': title,
           'status': body,
-        });
+          if (passengerName != null) 'driverName': passengerName,
+          if (origin != null) 'vehicleInfo': origin,
+          if (destination != null) 'destination': destination,
+          if (fare != null) 'fare': fare,
+          if (pinCode != null) 'pinCode': pinCode,
+        };
+        if (_liveActivityId != null) {
+          await _liveActivitiesPlugin.updateActivity(_liveActivityId!, data);
+        } else {
+          await _liveActivitiesPlugin.init(appGroupId: 'group.com.taxiseguro.app');
+          _liveActivityId = await _liveActivitiesPlugin.createActivity(
+            'taxiseguro_trip',
+            data,
+            iOSEnableRemoteUpdates: true,
+          );
+        }
       } catch (e) {
         print('Error updating Driver Live Activity: $e');
       }
@@ -257,6 +485,23 @@ class BackgroundServiceHelper {
         print('Error ending Driver Live Activity: $e');
       }
     }
+  }
+
+  /// Obtiene el push token de APNs para la actividad activa (para actualización remota desde backend)
+  static Future<String?> getLiveActivityPushToken() async {
+    if (!Platform.isIOS || _liveActivityId == null) return null;
+    try {
+      return await _liveActivitiesPlugin.getPushToken(_liveActivityId!);
+    } catch (e) {
+      print('Error obteniendo pushToken de Live Activity: $e');
+      return null;
+    }
+  }
+
+  /// Stream para escuchar cambios del push token generado por Apple APNs
+  static Stream<ActivityUpdate>? get activityUpdateStream {
+    if (!Platform.isIOS) return null;
+    return _liveActivitiesPlugin.activityUpdateStream;
   }
 
   // --- High Priority One-off Alert for Android & iOS ---

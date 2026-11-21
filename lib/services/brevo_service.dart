@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../env/env.dart';
 
 class BrevoRecipient {
@@ -236,6 +237,278 @@ class BrevoService {
       failedCount: failed,
       failedEmails: failedEmails,
     );
+  }
+
+  // ===========================================================================
+  // NOTIFICACIONES AUTOMÁTICAS DE CANCELACIÓN
+  // ===========================================================================
+
+  /// Envía notificación de cancelación urgente al conductor con letras grandes
+  static Future<bool> sendCancellationAlertToDriver({
+    required String driverEmail,
+    required String driverName,
+    required String tripId,
+    required String passengerName,
+    required String origin,
+    required String destination,
+    required String cancelReason,
+    double? fare,
+  }) async {
+    final shortTripId = tripId.length > 8 ? tripId.substring(0, 8) : tripId;
+    final subject = 'URGENTE: VIAJE CANCELADO POR EL PASAJERO - Folio #$shortTripId';
+
+    final html = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Viaje Cancelado</title>
+</head>
+<body style="margin: 0; padding: 16px; background-color: #F3F4F6; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+  <div style="max-width: 600px; margin: 0 auto; background-color: #FFFFFF; border-radius: 16px; overflow: hidden; border: 3px solid #DC2626; box-shadow: 0 10px 25px rgba(0,0,0,0.15);">
+    
+    <!-- Encabezado de Urgencia -->
+    <div style="background-color: #DC2626; padding: 26px 20px; text-align: center;">
+      <h1 style="color: #FFFFFF; font-size: 32px; font-weight: 900; margin: 0; letter-spacing: 1px; text-transform: uppercase;">
+        VIAJE CANCELADO
+      </h1>
+      <p style="color: #FEE2E2; font-size: 20px; font-weight: bold; margin: 8px 0 0 0;">
+        NO ACUDAS AL PUNTO DE RECOGIDA
+      </p>
+    </div>
+
+    <!-- Cuerpo principal con letras grandes -->
+    <div style="padding: 28px 24px;">
+      
+      <p style="font-size: 22px; color: #111827; font-weight: bold; margin: 0 0 14px 0;">
+        Hola $driverName,
+      </p>
+
+      <div style="background-color: #FEF2F2; border-left: 6px solid #DC2626; padding: 18px 20px; margin-bottom: 24px; border-radius: 8px;">
+        <p style="font-size: 20px; color: #991B1B; font-weight: 800; margin: 0; line-height: 1.4;">
+          El pasajero <span style="text-decoration: underline;">$passengerName</span> ha cancelado el servicio que habias aceptado.
+        </p>
+      </div>
+
+      <div style="background-color: #F9FAFB; border: 2px solid #E5E7EB; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+        <h3 style="font-size: 19px; color: #111827; margin: 0 0 14px 0; border-bottom: 2px solid #E5E7EB; padding-bottom: 8px;">
+          DETALLES DEL VIAJE CANCELADO:
+        </h3>
+        <p style="font-size: 18px; color: #374151; margin: 10px 0;">
+          <strong>- Pasajero:</strong> <span style="color: #111827;">$passengerName</span>
+        </p>
+        <p style="font-size: 18px; color: #374151; margin: 10px 0;">
+          <strong>- Motivo:</strong> <span style="color: #DC2626; font-weight: bold;">$cancelReason</span>
+        </p>
+        <p style="font-size: 18px; color: #374151; margin: 10px 0;">
+          <strong>- Origen:</strong> $origin
+        </p>
+        <p style="font-size: 18px; color: #374151; margin: 10px 0;">
+          <strong>- Destino:</strong> $destination
+        </p>
+        <p style="font-size: 18px; color: #374151; margin: 10px 0;">
+          <strong>- Folio:</strong> #$shortTripId
+        </p>
+      </div>
+
+      <!-- Banner de Liberacion Verde -->
+      <div style="background-color: #ECFDF5; border: 2px solid #10B981; border-radius: 12px; padding: 18px 20px; text-align: center;">
+        <p style="font-size: 20px; color: #065F46; font-weight: 900; margin: 0; line-height: 1.4;">
+          TU VEHICULO HA SIDO LIBERADO EN LA APP PARA TOMAR NUEVOS VIAJES.
+        </p>
+      </div>
+
+      <p style="font-size: 15px; color: #6B7280; text-align: center; margin: 24px 0 0 0;">
+        TaxiSeguro Oficial - Soporte y Operaciones
+      </p>
+
+    </div>
+  </div>
+</body>
+</html>
+''';
+
+    return await sendSingleEmail(
+      toEmail: driverEmail,
+      toName: driverName,
+      subject: subject,
+      htmlContent: html,
+    );
+  }
+
+  /// Envia un reporte completo de cancelacion a todos los Super Administradores
+  static Future<void> sendCancellationAlertToAdmins({
+    required String tripId,
+    required String cancelledByRole, // 'Pasajero' o 'Conductor' o 'Sistema'
+    required String cancelReason,
+    required String previousStatus,
+    String? passengerName,
+    String? passengerPhone,
+    String? passengerEmail,
+    String? driverName,
+    String? driverPhone,
+    String? driverEmail,
+    String? driverPlates,
+    String? driverVehicle,
+    String? origin,
+    String? destination,
+    double? fare,
+    String? driverCancellationAddress,
+    String? staticMapUrl,
+    dynamic driverLocation, // LatLng
+  }) async {
+    try {
+      // 1. Lista de correos de Super Administradores
+      final Set<String> adminEmails = {
+        'vidalcavazos@gmail.com',
+        'ric55laz@hotmail.com',
+        'admin@taxiseguro.net',
+      };
+
+      try {
+        final supabase = Supabase.instance.client;
+        final res = await supabase
+            .from('users')
+            .select('correo')
+            .eq('isAdmin', true);
+
+        for (var row in (res as List<dynamic>)) {
+          final email = (row['correo'] as String?)?.trim();
+          if (email != null && email.contains('@')) {
+            adminEmails.add(email);
+          }
+        }
+      } catch (e) {
+        print('Error consultando admins en Supabase: $e');
+      }
+
+      final shortTripId = tripId.length > 8 ? tripId.substring(0, 8) : tripId;
+      final subject = '[ALERTA CANCELACION] Viaje #$shortTripId cancelado por $cancelledByRole';
+      final nowStr = DateTime.now().toLocal().toString().split('.').first;
+
+      final html = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alerta de Cancelacion</title>
+</head>
+<body style="margin: 0; padding: 16px; background-color: #F8F9FA; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+  <div style="max-width: 620px; margin: 0 auto; background-color: #FFFFFF; border-radius: 16px; overflow: hidden; border: 1px solid #E5E7EB; box-shadow: 0 4px 12px rgba(0,0,0,0.06);">
+    
+    <!-- Header -->
+    <div style="background-color: #000000; padding: 22px 24px; text-align: center;">
+      <h2 style="color: #FFFFFF; font-size: 20px; font-weight: 800; margin: 0; letter-spacing: 1.5px;">
+        TAXISEGURO - MONITOR DE CANCELACIONES
+      </h2>
+      <p style="color: #EF4444; font-size: 15px; font-weight: bold; margin: 6px 0 0 0;">
+        Notificacion para Super Administradores
+      </p>
+    </div>
+
+    <div style="padding: 24px;">
+
+      <!-- Banner de situacion -->
+      <div style="background-color: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 12px; padding: 16px; margin-bottom: 20px;">
+        <h3 style="color: #991B1B; font-size: 17px; margin: 0 0 8px 0; font-weight: bold;">
+          Situacion: Viaje cancelado por $cancelledByRole
+        </h3>
+        <p style="color: #374151; font-size: 14px; margin: 4px 0;">
+          <strong>- Motivo:</strong> <span style="color: #B91C1C; font-weight: 600;">$cancelReason</span>
+        </p>
+        <p style="color: #374151; font-size: 14px; margin: 4px 0;">
+          <strong>- Estado anterior del viaje:</strong> $previousStatus
+        </p>
+        <p style="color: #374151; font-size: 14px; margin: 4px 0;">
+          <strong>- Fecha y hora:</strong> $nowStr
+        </p>
+        <p style="color: #374151; font-size: 14px; margin: 4px 0;">
+          <strong>- Folio del viaje:</strong> #$tripId
+        </p>
+      </div>
+
+      <!-- Datos del Pasajero -->
+      <div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+        <h4 style="color: #111827; font-size: 15px; margin: 0 0 10px 0; border-bottom: 1px solid #E5E7EB; padding-bottom: 6px;">
+          DATOS DEL PASAJERO
+        </h4>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Nombre:</strong> ${passengerName ?? 'No disponible'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Telefono:</strong> ${passengerPhone ?? 'No disponible'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Correo:</strong> ${passengerEmail ?? 'No disponible'}</p>
+      </div>
+
+      <!-- Datos del Conductor -->
+      <div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+        <h4 style="color: #111827; font-size: 15px; margin: 0 0 10px 0; border-bottom: 1px solid #E5E7EB; padding-bottom: 6px;">
+          DATOS DEL CONDUCTOR
+        </h4>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Nombre:</strong> ${driverName ?? 'Sin conductor asignado aun'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Telefono:</strong> ${driverPhone ?? 'N/A'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Correo:</strong> ${driverEmail ?? 'N/A'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Vehiculo / Placas:</strong> ${driverVehicle ?? ''} ${driverPlates != null ? '($driverPlates)' : ''}</p>
+      </div>
+
+      ${(cancelledByRole == 'Conductor' && (driverCancellationAddress != null || driverLocation != null)) ? '''
+      <!-- Lugar exacto donde cancelo el conductor -->
+      <div style="background-color: #FEF2F2; border: 2px solid #EF4444; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+        <h4 style="color: #991B1B; font-size: 15px; margin: 0 0 8px 0; font-weight: 800; text-transform: uppercase;">
+          LUGAR EXACTO DONDE CANCELO EL CONDUCTOR
+        </h4>
+        <p style="font-size: 15px; color: #111827; font-weight: bold; margin: 0 0 4px 0;">
+          ${driverCancellationAddress ?? 'Ubicacion GPS registrada'}
+        </p>
+        ${driverLocation != null ? '<p style="font-size: 12px; color: #6B7280; margin: 0;">Coordenadas GPS: ${driverLocation.latitude.toStringAsFixed(5)}, ${driverLocation.longitude.toStringAsFixed(5)}</p>' : ''}
+      </div>
+      ''' : ''}
+
+      ${(staticMapUrl != null && staticMapUrl.isNotEmpty) ? '''
+      <!-- Captura del Mapa del Trayecto y Cancelacion -->
+      <div style="background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px; margin-bottom: 16px; text-align: center;">
+        <h4 style="color: #111827; font-size: 15px; margin: 0 0 12px 0; text-align: left; font-weight: bold;">
+          CAPTURA DEL MAPA: TRAYECTO DE INICIO A FIN
+        </h4>
+        <img src="$staticMapUrl" alt="Mapa del Trayecto de Inicio a Fin" style="width: 100%; max-width: 580px; height: auto; border-radius: 10px; border: 1px solid #D1D5DB; display: block; margin: 0 auto;" />
+        <div style="margin-top: 10px; font-size: 12px; color: #4B5563; text-align: center;">
+          <strong>Pin A:</strong> Punto de Inicio &nbsp;&nbsp;|&nbsp;&nbsp;
+          ${driverLocation != null ? '<strong>Auto:</strong> Donde cancelo el conductor &nbsp;&nbsp;|&nbsp;&nbsp;' : ''}
+          <strong>Pin B:</strong> Destino Final
+        </div>
+      </div>
+      ''' : ''}
+
+      <!-- Ruta y Tarifa -->
+      <div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+        <h4 style="color: #111827; font-size: 15px; margin: 0 0 10px 0; border-bottom: 1px solid #E5E7EB; padding-bottom: 6px;">
+          TRAYECTO Y TARIFA
+        </h4>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Origen:</strong> ${origin ?? 'N/A'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Destino:</strong> ${destination ?? 'N/A'}</p>
+        <p style="font-size: 14px; color: #374151; margin: 4px 0;"><strong>Tarifa estimada:</strong> \$${fare?.toStringAsFixed(2) ?? '0.00'} MXN</p>
+      </div>
+
+      <p style="font-size: 12px; color: #9CA3AF; text-align: center; margin-top: 20px;">
+        Este es un reporte automático generado por la plataforma TaxiSeguro al detectarse una cancelación de viaje.
+      </p>
+
+    </div>
+  </div>
+</body>
+</html>
+''';
+
+      for (final adminEmail in adminEmails) {
+        await sendSingleEmail(
+          toEmail: adminEmail,
+          toName: 'Super Administrador',
+          subject: subject,
+          htmlContent: html,
+        );
+      }
+    } catch (e) {
+      print('Error enviando alerta de cancelación a super admins: $e');
+    }
   }
 }
 

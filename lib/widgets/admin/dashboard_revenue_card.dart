@@ -255,40 +255,43 @@ class DashboardRevenueCardState extends State<DashboardRevenueCard> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'TOTAL GENERADO',
-                      style: TextStyle(
-                        fontFamily: 'Google Sans',
-                        color: Colors.white60,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'INGRESOS REALES',
+                        style: TextStyle(
+                          fontFamily: 'Google Sans',
+                          color: Colors.white60,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${_formatCurrency(totalRev)} MXN',
-                      style: const TextStyle(
-                        fontFamily: 'Google Sans',
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_formatCurrency(totalRev)} MXN',
+                        style: const TextStyle(
+                          fontFamily: 'Google Sans',
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${data.totalTrips} ${data.totalTrips == 1 ? "viaje completado" : "viajes completados"}',
-                      style: const TextStyle(
-                        fontFamily: 'Inter',
-                        color: Colors.white70,
-                        fontSize: 11,
+                      const SizedBox(height: 2),
+                      Text(
+                        '${data.totalTrips} ${data.totalTrips == 1 ? "viaje completado" : "viajes completados"}',
+                        style: const TextStyle(
+                          fontFamily: 'Inter',
+                          color: Colors.white70,
+                          fontSize: 11,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
+                const SizedBox(width: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
@@ -305,7 +308,7 @@ class DashboardRevenueCardState extends State<DashboardRevenueCard> {
                           Icon(Icons.monetization_on, color: Color(0xFFC7FF2E), size: 14),
                           SizedBox(width: 4),
                           Text(
-                            'Comisión (20%)',
+                            'Admins (20%)',
                             style: TextStyle(
                               fontFamily: 'Google Sans',
                               color: Color(0xFFC7FF2E),
@@ -533,7 +536,7 @@ class DashboardRevenueCardState extends State<DashboardRevenueCard> {
                   Expanded(
                     flex: cardPct > 0 ? (cardPct * 10).toInt() : 0,
                     child: Container(
-                      color: const Color(0xFF1E293B),
+                      color: Colors.black87,
                     ),
                   ),
                 ],

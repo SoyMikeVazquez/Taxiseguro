@@ -49,6 +49,8 @@
 	<string>La aplicación necesita acceder a la galería para subir los documentos del vehículo y el conductor.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -76,7 +78,10 @@
 	<array>
 		<string>fetch</string>
 		<string>location</string>
+		<string>remote-notification</string>
 	</array>
+	<key>OneSignal_app_groups_key</key>
+	<string>group.com.taxiseguro.app</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

@@ -6,6 +6,7 @@ import 'driver_onboarding_screen.dart';
 import 'driver_pending_approval_screen.dart';
 import 'driver_face_capture_screen.dart';
 import 'admin/super_admin_main_screen.dart';
+import '../services/onesignal_service.dart';
 
 class SplashRouterScreen extends StatefulWidget {
   const SplashRouterScreen({super.key});
@@ -98,6 +99,16 @@ class _SplashRouterScreenState extends State<SplashRouterScreen> {
 
           }
         }
+      }
+
+      // Segmentar rol en OneSignal para notificaciones push en reposo
+      if (isAdmin) {
+        OneSignalService().setTag('role', 'admin');
+      } else if (isConductor) {
+        OneSignalService().setTag('role', 'conductor');
+        OneSignalService().setTag('approval_status', approvalStatus);
+      } else {
+        OneSignalService().setTag('role', 'pasajero');
       }
 
       if (mounted) {

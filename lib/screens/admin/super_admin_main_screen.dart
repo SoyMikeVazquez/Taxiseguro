@@ -14,6 +14,8 @@ import 'admin_ads_screen.dart';
 import 'admin_mass_email_screen.dart';
 import 'admin_pricing_config_screen.dart';
 import '../../widgets/admin/dashboard_revenue_card.dart';
+import 'admin_live_activity_simulation_screen.dart';
+import 'admin_push_notifications_screen.dart';
 
 class SuperAdminMainScreen extends StatefulWidget {
   const SuperAdminMainScreen({super.key});
@@ -372,6 +374,36 @@ class _SuperAdminMainScreenState extends State<SuperAdminMainScreen> {
                       icon: Icons.price_change_outlined,
                       badge: 'Tarifas',
                       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminPricingConfigScreen())),
+                    ),
+
+                    // 11. Simulador de Live Activity & Pantalla de Bloqueo
+                    _buildModuleTile(
+                      title: '11. Simulador de Live Activity',
+                      subtitle: 'Simula un viaje completo cada 10s para probar la pantalla de bloqueo e Isla Dinámica',
+                      icon: Icons.notifications_active_outlined,
+                      badge: 'En vivo',
+                      isHighlight: true,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AdminLiveActivitySimulationScreen(),
+                        ),
+                      ),
+                    ),
+
+                    // 12. Difusión de Notificaciones Push (OneSignal)
+                    _buildModuleTile(
+                      title: '12. Notificaciones Push (OneSignal)',
+                      subtitle: 'Enviar alertas y mensajes push a conductores, pasajeros o usuarios específicos',
+                      icon: Icons.send_to_mobile_outlined,
+                      badge: 'Push',
+                      isHighlight: true,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AdminPushNotificationsScreen(),
+                        ),
+                      ),
                     ),
                   ],
                 ),

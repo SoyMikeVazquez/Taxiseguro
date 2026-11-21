@@ -1,11 +1,19 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/trip.dart';
 import 'package:latlong2/latlong.dart';
 import 'rating_service.dart';
 import 'resend_service.dart';
+import 'brevo_service.dart';
+import 'mapbox_service.dart';
+import 'location_service.dart';
 import 'geofence_service.dart';
+import 'whatsapp_notifications.dart';
+import 'onesignal_service.dart';
+import 'referral_service.dart';
 
 class TripService {
   final SupabaseClient _client = Supabase.instance.client;
@@ -57,6 +65,48 @@ class TripService {
           status: status,
         ).then((_) => print('Email a conductor enviado')).catchError((e) => print('Error email conductor: $e'));
       }
+
+      // Notificaciones Push remotas vía OneSignal (iOS y Android en reposo)
+      final oneSignal = OneSignalService();
+      if (userId != null && userId.isNotEmpty) {
+        String pushTitle = 'Actualizacion de Viaje';
+        String pushBody = 'Tu viaje ha cambiado de estado a: $status';
+
+        if (status == 'aceptado' || status == 'accepted') {
+          pushTitle = 'Conductor Asignado';
+          pushBody = '$driverName acepto tu viaje y se dirige a tu ubicacion.';
+        } else if (status == 'en camino' || status == 'arrived') {
+          pushTitle = 'Tu Conductor Llego';
+          pushBody = '$driverName esta afuera esperandote en tu punto de partida.';
+        } else if (status == 'in_progress' || status == 'en curso') {
+          pushTitle = 'Viaje en Curso';
+          pushBody = 'Vas en camino seguro a tu destino con $driverName.';
+        } else if (status == 'finalizado' || status == 'completed') {
+          pushTitle = 'Viaje Finalizado';
+          pushBody = 'Has llegado a tu destino. Gracias por viajar con TaxiSeguro.';
+        } else if (status == 'cancelado' || status == 'cancelled') {
+          pushTitle = 'Viaje Cancelado';
+          pushBody = 'El servicio ha sido cancelado.';
+        }
+
+        oneSignal.notifyTripStatusChangeForUser(
+          targetUserId: userId,
+          title: pushTitle,
+          body: pushBody,
+          tripId: tripId,
+          status: status,
+        );
+      }
+
+      if (driverId != null && driverId.isNotEmpty && (status == 'cancelado' || status == 'cancelled')) {
+        oneSignal.notifyTripStatusChangeForUser(
+          targetUserId: driverId,
+          title: 'Viaje Cancelado',
+          body: 'El pasajero ha cancelado el servicio.',
+          tripId: tripId,
+          status: status,
+        );
+      }
     } catch (e) {
       print('Error en notifyTripStatusChange: $e');
     }
@@ -88,6 +138,9 @@ class TripService {
     payload.remove('created_at');
     payload.removeWhere((key, value) => value == null);
 
+    Trip? createdTrip;
+    bool notifiedByTrigger = false;
+
     // Intento 1: Inserción completa
     try {
       final response = await _client
@@ -96,44 +149,212 @@ class TripService {
           .select()
           .single();
           
-      return Trip.fromJson(response);
+      createdTrip = Trip.fromJson(response);
+      notifiedByTrigger = response['notified_drivers'] == true;
     } catch (e) {
       print('Error creando viaje (Intento 1): $e');
     }
 
     // Intento 2: Si 'pending' falla por restricción CHECK antigua (in_progress, completed, cancelled)
-    try {
-      final fallbackPayload = Map<String, dynamic>.from(payload);
-      fallbackPayload['status'] = 'in_progress';
-      final response = await _client
-          .from('trips')
-          .insert(fallbackPayload)
-          .select()
-          .single();
-          
-      return Trip.fromJson(response);
-    } catch (e2) {
-      print('Error creando viaje (Intento 2 - in_progress): $e2');
+    if (createdTrip == null) {
+      try {
+        final fallbackPayload = Map<String, dynamic>.from(payload);
+        fallbackPayload['status'] = 'in_progress';
+        final response = await _client
+            .from('trips')
+            .insert(fallbackPayload)
+            .select()
+            .single();
+            
+        createdTrip = Trip.fromJson(response);
+        notifiedByTrigger = response['notified_drivers'] == true;
+      } catch (e2) {
+        print('Error creando viaje (Intento 2 - in_progress): $e2');
+      }
     }
 
     // Intento 3: Columnas esenciales mínimas (user_id, origin_address, destination_address)
-    try {
-      final response = await _client
-          .from('trips')
-          .insert({
-            'user_id': trip.userId,
-            'origin_address': trip.originAddress,
-            'destination_address': trip.destinationAddress,
-            'fare': trip.fare ?? 0.0,
-            'distance_km': trip.distanceKm ?? 0.0,
-          })
-          .select()
-          .single();
+    if (createdTrip == null) {
+      try {
+        final response = await _client
+            .from('trips')
+            .insert({
+              'user_id': trip.userId,
+              'origin_address': trip.originAddress,
+              'destination_address': trip.destinationAddress,
+              'fare': trip.fare ?? 0.0,
+              'distance_km': trip.distanceKm ?? 0.0,
+            })
+            .select()
+            .single();
 
-      return Trip.fromJson(response);
-    } catch (e3) {
-      print('Error creando viaje (Intento 3 - mínimo): $e3');
-      return null;
+        createdTrip = Trip.fromJson(response);
+        notifiedByTrigger = response['notified_drivers'] == true;
+      } catch (e3) {
+        print('Error creando viaje (Intento 3 - mínimo): $e3');
+      }
+    }
+
+    // Disparar notificaciones (OneSignal + WhatsApp) a conductores a menos de 5 km si no las despachó ya el trigger de Supabase
+    if (createdTrip != null && createdTrip.id != null && !notifiedByTrigger) {
+      _dispatchPushForNewTrip(createdTrip);
+    }
+
+    return createdTrip;
+  }
+
+  /// Encuentra la información completa (user_id, nombre, telefono, distancia_km)
+  /// de todos los conductores activos dentro del radio de cobertura (5 km por defecto)
+  Future<List<Map<String, dynamic>>> findNearbyActiveDrivers({
+    required double originLat,
+    required double originLng,
+    double radiusKm = 5.0,
+  }) async {
+    final Map<String, Map<String, dynamic>> nearbyDriversMap = {};
+
+    // 1. Consulta directa a la tabla conductores calculando distancia exacta en metros
+    try {
+      final res = await _client
+          .from('conductores')
+          .select('id, user_id, nombre, nombre_completo, telefono, current_lat, current_lng, isActivo, estatus')
+          .or('isActivo.eq.true,estatus.eq.activo');
+
+      final List<dynamic> list = (res as List<dynamic>?) ?? [];
+      for (final d in list) {
+        final uid = (d['user_id'] ?? d['id'])?.toString();
+        final dLat = (d['current_lat'] as num?)?.toDouble();
+        final dLng = (d['current_lng'] as num?)?.toDouble();
+
+        if (uid != null && uid.isNotEmpty && dLat != null && dLng != null) {
+          final distInMeters = Geolocator.distanceBetween(originLat, originLng, dLat, dLng);
+          if (distInMeters <= (radiusKm * 1000)) {
+            final driverName = (d['nombre_completo'] ?? d['nombre'] ?? 'Conductor').toString().trim();
+            final driverPhone = (d['telefono'] ?? '').toString().trim();
+            nearbyDriversMap[uid] = {
+              'user_id': uid,
+              'nombre': driverName.isNotEmpty ? driverName : 'Conductor',
+              'telefono': driverPhone,
+              'distancia_km': distInMeters / 1000.0,
+            };
+          }
+        }
+      }
+    } catch (err) {
+      debugPrint('Aviso al filtrar conductores activos en Supabase: $err');
+    }
+
+    // 2. Respaldo / complemento con la función RPC en Supabase
+    try {
+      final rpcResult = await _client.rpc('get_nearby_active_drivers', params: {
+        'origin_lat': originLat,
+        'origin_lng': originLng,
+        'max_radius_km': radiusKm,
+      });
+
+      if (rpcResult is List) {
+        for (final item in rpcResult) {
+          final uid = item['user_id']?.toString();
+          if (uid != null && uid.isNotEmpty && !nearbyDriversMap.containsKey(uid)) {
+            nearbyDriversMap[uid] = {
+              'user_id': uid,
+              'nombre': (item['nombre'] ?? 'Conductor').toString(),
+              'telefono': (item['telefono'] ?? '').toString(),
+              'distancia_km': (item['distancia_km'] as num?)?.toDouble() ?? 0.0,
+            };
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Si algún conductor cercano no tenía teléfono en 'conductores', buscarlo en 'users'
+    final List<String> missingPhoneUids = nearbyDriversMap.entries
+        .where((e) => (e.value['telefono'] as String).isEmpty)
+        .map((e) => e.key)
+        .toList();
+
+    if (missingPhoneUids.isNotEmpty) {
+      try {
+        final usersRes = await _client
+            .from('users')
+            .select('user_id, telefono, nombre')
+            .inFilter('user_id', missingPhoneUids);
+        for (final u in (usersRes as List<dynamic>)) {
+          final uid = u['user_id']?.toString();
+          final phone = (u['telefono'] ?? '').toString().trim();
+          if (uid != null && nearbyDriversMap.containsKey(uid) && phone.isNotEmpty) {
+            nearbyDriversMap[uid]!['telefono'] = phone;
+          }
+        }
+      } catch (_) {}
+    }
+
+    return nearbyDriversMap.values.toList();
+  }
+
+  /// Encuentra los user_id de los conductores activos en un radio de cobertura (5 km por defecto)
+  Future<List<String>> findNearbyActiveDriverUserIds({
+    required double originLat,
+    required double originLng,
+    double radiusKm = 5.0,
+  }) async {
+    final drivers = await findNearbyActiveDrivers(
+      originLat: originLat,
+      originLng: originLng,
+      radiusKm: radiusKm,
+    );
+    return drivers.map((d) => d['user_id'].toString()).toList();
+  }
+
+  /// Despacha notificaciones por OneSignal Push y por WhatsApp a todos los conductores activos dentro de 5 km
+  Future<void> _dispatchPushForNewTrip(Trip trip) async {
+    try {
+      List<Map<String, dynamic>> nearbyDrivers = [];
+      List<String>? targetDriverIds;
+
+      if (trip.originLat != null && trip.originLng != null) {
+        nearbyDrivers = await findNearbyActiveDrivers(
+          originLat: trip.originLat!,
+          originLng: trip.originLng!,
+          radiusKm: 5.0,
+        );
+
+        if (nearbyDrivers.isNotEmpty) {
+          targetDriverIds = nearbyDrivers.map((d) => d['user_id'].toString()).toList();
+          debugPrint('Notificando (OneSignal + WhatsApp) a ${nearbyDrivers.length} conductor(es) a menos de 5 km de ${trip.originAddress}');
+        } else {
+          debugPrint('No se detectaron conductores activos con ubicación dentro de 5 km.');
+          targetDriverIds = null;
+        }
+      }
+
+      // 1. Notificación Push vía OneSignal
+      await OneSignalService().notifyNewTripForDrivers(
+        tripId: trip.id!,
+        originAddress: trip.originAddress,
+        fare: trip.fare,
+        targetDriverUserIds: targetDriverIds,
+      );
+
+      // 2. Notificación vía WhatsApp a todos los conductores cercanos dentro de 5 km
+      for (final driver in nearbyDrivers) {
+        final String phone = (driver['telefono'] ?? '').toString().trim();
+        final String name = (driver['nombre'] ?? 'Conductor').toString().trim();
+        final double? distKm = (driver['distancia_km'] as num?)?.toDouble();
+
+        if (phone.isNotEmpty) {
+          WhatsAppService.sendNewTripAlertToDriverWhatsApp(
+            driverPhone: phone,
+            driverName: name,
+            tripId: trip.id!,
+            origin: trip.originAddress,
+            destination: trip.destinationAddress,
+            fare: trip.fare,
+            distanceFromDriverKm: distKm,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error al despachar notificaciones para nuevo viaje: $e');
     }
   }
 
@@ -163,16 +384,17 @@ class TripService {
         .map((data) => data.map((json) => Trip.fromJson(json)).toList());
   }
 
-  /// Obtiene la información pública del conductor (nombre y foto)
+  /// Obtiene la información pública del conductor (nombre, foto y teléfono)
   Future<Map<String, String?>> getDriverPublicInfo(String driverId) async {
     try {
       String? name;
       String? photo;
+      String? phone;
 
       // 1. Intentar desde public.conductores por user_id
       final driverResp = await _client
           .from('conductores')
-          .select('nombre, nombre_completo, imagen_perfil')
+          .select('nombre, nombre_completo, imagen_perfil, telefono, celular')
           .eq('user_id', driverId)
           .maybeSingle();
 
@@ -181,13 +403,14 @@ class TripService {
         final nSimple = driverResp['nombre'] as String?;
         name = (nComp != null && nComp.trim().isNotEmpty) ? nComp.trim() : nSimple?.trim();
         photo = driverResp['imagen_perfil'] as String?;
+        phone = (driverResp['telefono'] ?? driverResp['celular']) as String?;
       }
 
       // 2. Si no se encontró por user_id, intentar por id
       if (name == null || name.isEmpty) {
         final driverRespById = await _client
             .from('conductores')
-            .select('nombre, nombre_completo, imagen_perfil')
+            .select('nombre, nombre_completo, imagen_perfil, telefono, celular')
             .eq('id', driverId)
             .maybeSingle();
         if (driverRespById != null) {
@@ -195,20 +418,22 @@ class TripService {
           final nSimple = driverRespById['nombre'] as String?;
           name = (nComp != null && nComp.trim().isNotEmpty) ? nComp.trim() : nSimple?.trim();
           photo ??= driverRespById['imagen_perfil'] as String?;
+          phone ??= (driverRespById['telefono'] ?? driverRespById['celular']) as String?;
         }
       }
 
-      // 3. Si no tiene nombre o foto, buscar en public.users
-      if (name == null || name.isEmpty || photo == null || photo.isEmpty) {
+      // 3. Si no tiene nombre o foto o teléfono, buscar en public.users
+      if (name == null || name.isEmpty || photo == null || photo.isEmpty || phone == null || phone.isEmpty) {
         final userResp = await _client
             .from('users')
-            .select('nombre, imagen_perfil, fotodeperfil')
+            .select('nombre, imagen_perfil, fotodeperfil, telefono, phone_number, celular')
             .eq('user_id', driverId)
             .maybeSingle();
 
         if (userResp != null) {
           name ??= (userResp['nombre'] as String?)?.trim();
           photo ??= (userResp['imagen_perfil'] as String?) ?? (userResp['fotodeperfil'] as String?);
+          phone ??= (userResp['telefono'] ?? userResp['phone_number'] ?? userResp['celular']) as String?;
         }
       }
 
@@ -219,16 +444,18 @@ class TripService {
         if (meta != null) {
           name ??= (meta['name'] ?? meta['full_name'] ?? meta['nombre'])?.toString().trim();
           photo ??= (meta['avatar_url'] ?? meta['picture'])?.toString();
+          phone ??= (meta['phone'] ?? meta['phone_number'] ?? meta['telefono'])?.toString();
         }
       }
 
       return {
         'name': (name != null && name.trim().isNotEmpty) ? name.trim() : 'Conductor',
         'photo': photo,
+        'phone': phone,
       };
     } catch (e) {
       print('Error al obtener información pública del conductor: $e');
-      return {'name': null, 'photo': null};
+      return {'name': null, 'photo': null, 'phone': null};
     }
   }
 
@@ -239,16 +466,26 @@ class TripService {
       String? phone;
       String? photo;
 
-      // 1. Consultar en public.users
-      final userResp = await _client
+      // 1. Consultar en public.users por user_id o por id
+      var userResp = await _client
           .from('users')
-          .select('nombre, telefono, imagen_perfil, fotodeperfil')
+          .select('nombre, apellido, telefono, phone_number, celular, imagen_perfil, fotodeperfil')
           .eq('user_id', passengerUserId)
           .maybeSingle();
 
+      if (userResp == null) {
+        userResp = await _client
+            .from('users')
+            .select('nombre, apellido, telefono, phone_number, celular, imagen_perfil, fotodeperfil')
+            .eq('id', passengerUserId)
+            .maybeSingle();
+      }
+
       if (userResp != null) {
-        name = userResp['nombre'] as String?;
-        phone = userResp['telefono'] as String?;
+        final n = userResp['nombre'] as String?;
+        final a = userResp['apellido'] as String?;
+        name = '${n ?? ''} ${a ?? ''}'.trim();
+        phone = (userResp['telefono'] ?? userResp['phone_number'] ?? userResp['celular']) as String?;
         photo = (userResp['imagen_perfil'] as String?) ?? (userResp['fotodeperfil'] as String?);
       }
 
@@ -305,6 +542,38 @@ class TripService {
       
       // Notificar a ambos por correo
       notifyTripStatusChange(tripId, 'aceptado');
+
+      // Notificar al Pasajero vía WhatsApp (En segundo plano)
+      try {
+        final userId = response['user_id'] as String?;
+        if (userId != null && userId.isNotEmpty) {
+          getPassengerPublicInfo(userId).then((pInfo) {
+            final pPhone = pInfo['phone'] as String?;
+            if (pPhone != null && pPhone.isNotEmpty) {
+              _client
+                  .from('conductores')
+                  .select('modelo_auto, color_auto, placas')
+                  .eq('user_id', driverId)
+                  .maybeSingle()
+                  .then((dData) {
+                final auto = '${dData?['modelo_auto'] ?? 'Taxi'} ${dData?['color_auto'] ?? ''}'.trim();
+                final placas = (dData?['placas'] ?? '').toString();
+                WhatsAppService.sendTripAssignedWhatsApp(
+                  passengerPhone: pPhone,
+                  passengerName: (pInfo['name'] as String?) ?? 'Pasajero',
+                  driverName: driverInfo['name'] ?? 'Conductor',
+                  vehicleInfo: auto.isNotEmpty ? auto : 'Taxi Oficial',
+                  plateNumber: placas.isNotEmpty ? placas : 'En camino',
+                  origin: (response['origin_address'] as String?) ?? 'Tu ubicación',
+                  destination: (response['destination_address'] as String?) ?? 'Destino solicitado',
+                  fare: (response['fare'] as num?)?.toDouble() ?? 0.0,
+                  pinCode: (response['codigo'] as num?)?.toInt(),
+                );
+              }).catchError((_) {});
+            }
+          }).catchError((_) {});
+        }
+      } catch (_) {}
       
       return true;
     } catch (e) {
@@ -386,6 +655,39 @@ class TripService {
       
       // Notificar cambio de estado
       notifyTripStatusChange(tripId, newStatus == 'arrived' ? 'en camino' : newStatus);
+
+      // Si el conductor llegó, enviar WhatsApp al Pasajero con el PIN de abordaje
+      if (newStatus == 'arrived') {
+        try {
+          _client.from('trips').select().eq('id', tripId).maybeSingle().then((tripData) {
+            if (tripData != null) {
+              final userId = tripData['user_id'] as String?;
+              final driverId = tripData['driver_id'] as String?;
+              if (userId != null && userId.isNotEmpty) {
+                getPassengerPublicInfo(userId).then((pInfo) {
+                  final pPhone = pInfo['phone'] as String?;
+                  if (pPhone != null && pPhone.isNotEmpty) {
+                    _client.from('conductores').select().eq('user_id', driverId ?? '').maybeSingle().then((dData) {
+                      final auto = '${dData?['modelo_auto'] ?? 'Taxi'} ${dData?['color_auto'] ?? ''}'.trim();
+                      final placas = (dData?['placas'] ?? '').toString();
+                      final driverName = (dData?['nombre_completo'] ?? dData?['nombre'] ?? 'Conductor').toString();
+                      WhatsAppService.sendDriverArrivedWhatsApp(
+                        passengerPhone: pPhone,
+                        passengerName: (pInfo['name'] as String?) ?? 'Pasajero',
+                        driverName: driverName,
+                        vehicleInfo: auto.isNotEmpty ? auto : 'Taxi Oficial',
+                        plateNumber: placas.isNotEmpty ? placas : 'En sitio',
+                        origin: (tripData['origin_address'] as String?) ?? 'Punto de recogida',
+                        pinCode: updateData['codigo'] as int?,
+                      );
+                    }).catchError((_) {});
+                  }
+                }).catchError((_) {});
+              }
+            }
+          }).catchError((_) {});
+        } catch (_) {}
+      }
       
       return true;
     } catch (e) {
@@ -431,16 +733,17 @@ class TripService {
       }).eq('id', tripId);
 
       // Regla de Facturación TaxiSeguro: al finalizar el viaje, se mandan los detalles a los row de facturación
+      String? passengerEmail;
+      String? passengerPhone;
+      String? passengerName;
+
       try {
-        String? passengerEmail;
-        String? passengerPhone;
-        String? passengerName;
         if (userId != null && userId.isNotEmpty) {
           try {
             final userRes = await _client.from('users').select().eq('user_id', userId).maybeSingle();
             if (userRes != null) {
               passengerEmail = userRes['correo'] as String?;
-              passengerPhone = userRes['telefono'] as String?;
+              passengerPhone = (userRes['telefono'] ?? userRes['phone_number'] ?? userRes['celular']) as String?;
               passengerName = userRes['nombre'] as String?;
             }
 
@@ -451,15 +754,53 @@ class TripService {
 
             final Map<String, dynamic> updateUserData = {
               'usuario_activado': true,
+              'descuento_siguiente_viaje': 0.0,
+              'viajes_con_descuento': 0,
             };
 
             // Regla del Sistema de Referidos:
-            // Al completar su PRIMER viaje, tomamos el 20% del monto a pagar (fare)
-            // y lo guardamos en la columna comision_referido de la tabla users.
+            // Al completar su PRIMER viaje:
             if (hasReferido && !wasAlreadyActivated) {
-              final double comisionReferido = fare * 0.20;
-              updateUserData['comision_referido'] = comisionReferido;
-              print('Sistema de Referidos: Comisión de \$${comisionReferido.toStringAsFixed(2)} asignada por 1er viaje de usuario $userId (Monto: \$$fare) para el conductor: ${userRes['referido']}');
+              final String tipoReferido = (userRes['tipo_referido'] ?? '').toString().toLowerCase();
+              final String refPhone = userRes['referido'].toString().trim().replaceAll(RegExp(r'\D'), '');
+              final String? referenteId = userRes['referente_id']?.toString();
+
+              if (tipoReferido == 'conductor') {
+                // Caso A: Referido por Conductor -> Comisión en efectivo del 20%
+                final double comisionReferido = fare * 0.20;
+                updateUserData['comision_referido'] = comisionReferido;
+                print('Sistema de Referidos (Conductor): Comisión de \$${comisionReferido.toStringAsFixed(2)} asignada por 1er viaje de usuario $userId para conductor: $refPhone');
+              } else {
+                // Caso B: Referido por Pasajero -> Descuento del 20% en su siguiente viaje para el usuario referente
+                try {
+                  Map<String, dynamic>? referrerDoc;
+                  if (referenteId != null && referenteId.isNotEmpty) {
+                    referrerDoc = await _client.from('users').select('id, user_id, viajes_con_descuento').eq('user_id', referenteId).maybeSingle();
+                  }
+                  if (referrerDoc == null && refPhone.isNotEmpty) {
+                    referrerDoc = await _client.from('users').select('id, user_id, viajes_con_descuento').eq('telefono', refPhone).maybeSingle();
+                  }
+
+                  if (referrerDoc != null) {
+                    final int currentDiscounts = (referrerDoc['viajes_con_descuento'] as num?)?.toInt() ?? 0;
+                    await _client.from('users').update({
+                      'descuento_siguiente_viaje': 20.0,
+                      'viajes_con_descuento': currentDiscounts + 1,
+                    }).eq('id', referrerDoc['id']);
+                    print('Sistema de Referidos (Pasajero): Usuario referente ${referrerDoc['user_id']} acreditado con 20% de descuento para su próximo viaje.');
+                  }
+                } catch (refUserErr) {
+                  print('Error al acreditar descuento a usuario referente: $refUserErr');
+                }
+              }
+
+              // Actualizar el estado 'activo: true' en la columna JSON usuarios_referidos del referente y en la tabla referidos
+              ReferralService().markReferralActivated(
+                referrerPhone: refPhone,
+                referredUserId: userId,
+                commission: (tipoReferido == 'conductor') ? (fare * 0.20) : null,
+                tripId: tripId,
+              );
             }
 
             await _client.from('users').update(updateUserData).eq('user_id', userId);
@@ -500,6 +841,23 @@ class TripService {
       // Notificar completado
       notifyTripStatusChange(tripId, 'finalizado');
 
+      // Enviar Recibo de Viaje por WhatsApp al Pasajero (En segundo plano)
+      try {
+        if (passengerPhone != null && passengerPhone.isNotEmpty) {
+          WhatsAppService.sendTripReceiptWhatsApp(
+            passengerPhone: passengerPhone,
+            passengerName: passengerName ?? 'Pasajero',
+            tripId: tripId,
+            driverName: finalName ?? 'Conductor',
+            origin: (currentTrip?['origin_address'] as String?) ?? 'Origen',
+            destination: (currentTrip?['destination_address'] as String?) ?? 'Destino',
+            fare: fare,
+            distanceKm: (currentTrip?['distance_km'] as num?)?.toDouble(),
+            paymentMethod: metodoPago,
+          );
+        }
+      } catch (_) {}
+
       return true;
     } catch (e) {
       print('Error completando viaje: $e');
@@ -507,34 +865,369 @@ class TripService {
     }
   }
 
-  /// Cancelar un viaje
-  Future<bool> cancelTrip(String tripId, {String? cancelReason, String? nameDriver, String? photoDriver}) async {
+  // ===========================================================================
+  // LÍMITES DIARIOS DE CANCELACIÓN Y PENALIZACIONES
+  // (Conductor: 3 libres/día, luego $20 MXN penalización / Pasajero: 3 libres en búsqueda)
+  // ===========================================================================
+  static const int maxDriverCancellationsPerDay = 3;
+  static const int maxPassengerCancellationsPerDay = 3;
+  static const double driverCancellationPenaltyFee = 20.0;
+
+  /// Cuenta las cancelaciones del día actual realizadas por el conductor
+  Future<int> getDriverCancellationsToday(String driverId) async {
+    try {
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day).toUtc().toIso8601String();
+
+      final response = await _client
+          .from('trips')
+          .select('id, cancel_reason, created_at')
+          .eq('driver_id', driverId)
+          .eq('status', 'cancelled')
+          .gte('created_at', startOfDay);
+
+      int count = 0;
+      for (final item in (response as List)) {
+        final reason = (item['cancel_reason'] as String?)?.toLowerCase() ?? '';
+        final isSystem = reason.contains('sistema') || reason.contains('automáticamente') || reason.contains('tiempo de espera');
+        final isPassenger = reason.contains('pasajero');
+        if (!isSystem && !isPassenger) {
+          count++;
+        }
+      }
+      return count;
+    } catch (e) {
+      print('Error consultando cancelaciones de conductor: $e');
+      return 0;
+    }
+  }
+
+  /// Cuenta las cancelaciones del día actual realizadas por el pasajero
+  Future<int> getPassengerCancellationsToday(String userId) async {
+    try {
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day).toUtc().toIso8601String();
+
+      final response = await _client
+          .from('trips')
+          .select('id, cancel_reason, created_at')
+          .eq('user_id', userId)
+          .eq('status', 'cancelled')
+          .gte('created_at', startOfDay);
+
+      int count = 0;
+      for (final item in (response as List)) {
+        final reason = (item['cancel_reason'] as String?)?.toLowerCase() ?? '';
+        final isSystem = reason.contains('sistema') || reason.contains('automáticamente') || reason.contains('tiempo de espera');
+        final isDriver = reason.contains('conductor');
+        if (!isSystem && !isDriver) {
+          count++;
+        }
+      }
+      return count;
+    } catch (e) {
+      print('Error consultando cancelaciones de pasajero: $e');
+      return 0;
+    }
+  }
+
+  /// Devuelve el estatus de cancelaciones de hoy para el conductor (3 libres, luego penalización de $20 MXN)
+  Future<Map<String, dynamic>> getDriverCancellationStatus(String driverId) async {
+    final count = await getDriverCancellationsToday(driverId);
+    final remaining = (maxDriverCancellationsPerDay - count).clamp(0, maxDriverCancellationsPerDay);
+    final bool hasFee = count >= maxDriverCancellationsPerDay;
+    return {
+      'count': count,
+      'limit': maxDriverCancellationsPerDay,
+      'freeLimit': maxDriverCancellationsPerDay,
+      'remaining': remaining,
+      'remainingFree': remaining,
+      'hasFee': hasFee,
+      'feeAmount': hasFee ? driverCancellationPenaltyFee : 0.0,
+      'canCancel': true, // Siempre puede cancelar, aplicando penalización de $20 si superó el cupo libre
+    };
+  }
+
+  /// Devuelve el estatus de cancelaciones de hoy para el pasajero (límite 3 en búsqueda)
+  Future<Map<String, dynamic>> getPassengerCancellationStatus(String userId) async {
+    final count = await getPassengerCancellationsToday(userId);
+    final remaining = (maxPassengerCancellationsPerDay - count).clamp(0, maxPassengerCancellationsPerDay);
+    return {
+      'count': count,
+      'limit': maxPassengerCancellationsPerDay,
+      'remaining': remaining,
+      'canCancel': count < maxPassengerCancellationsPerDay,
+    };
+  }
+
+  /// Cancelar un viaje y notificar automáticamente a Super Admins y Conductor (con letras grandes si aplica)
+  Future<bool> cancelTrip(
+    String tripId, {
+    String? cancelReason,
+    String? nameDriver,
+    String? photoDriver,
+    String? cancelledBy,
+    LatLng? driverLocation,
+    bool bypassLimit = false,
+  }) async {
     try {
       String? finalName = nameDriver;
       String? finalPhoto = photoDriver;
 
-      if (finalName == null || finalName.isEmpty || finalPhoto == null || finalPhoto.isEmpty) {
+      // 1. Obtener detalles completos del viaje antes de cancelar
+      Map<String, dynamic>? currentTrip;
+      try {
+        currentTrip = await _client.from('trips').select().eq('id', tripId).maybeSingle();
+      } catch (e) {
+        print('Error consultando viaje para cancelar: $e');
+      }
+
+      final String previousStatus = currentTrip?['status'] as String? ?? 'pending';
+      final String? driverId = currentTrip?['driver_id'] as String?;
+      final String? userId = currentTrip?['user_id'] as String?;
+      final String originAddr = currentTrip?['origin_address'] as String? ?? 'N/A';
+      final String destAddr = currentTrip?['destination_address'] as String? ?? 'N/A';
+      final double? fareVal = (currentTrip?['fare'] as num?)?.toDouble();
+
+      final double? originLat = (currentTrip?['origin_lat'] as num?)?.toDouble();
+      final double? originLng = (currentTrip?['origin_lng'] as num?)?.toDouble();
+      final double? destLat = (currentTrip?['destination_lat'] as num?)?.toDouble();
+      final double? destLng = (currentTrip?['destination_lng'] as num?)?.toDouble();
+
+      // Resolver quién canceló
+      final String currentAuthId = _client.auth.currentUser?.id ?? '';
+      String role = cancelledBy ?? '';
+      if (role.isEmpty) {
+        if (currentAuthId.isNotEmpty && driverId != null && currentAuthId == driverId) {
+          role = 'Conductor';
+        } else if (currentAuthId.isNotEmpty && userId != null && currentAuthId == userId) {
+          role = 'Pasajero';
+        } else if (cancelReason != null && cancelReason.toLowerCase().contains('conductor')) {
+          role = 'Conductor';
+        } else {
+          role = 'Pasajero';
+        }
+      } else {
+        role = (role.toLowerCase().contains('driver') || role.toLowerCase().contains('conductor'))
+            ? 'Conductor'
+            : (role.toLowerCase().contains('sistema') ? 'Sistema' : 'Pasajero');
+      }
+
+      // 1.0 Regla: El pasajero NO puede cancelar una vez que el conductor ya tomó el viaje
+      if (role == 'Pasajero' && (previousStatus == 'accepted' || previousStatus == 'arrived' || previousStatus == 'in_progress')) {
+        print('Cancelación rechazada: El pasajero no puede cancelar un viaje asignado en curso ($previousStatus). Solo el conductor puede cancelar.');
+        return false;
+      }
+      // Cuando el viaje aún está en búsqueda/solicitud (status: pending), el pasajero puede cancelar libremente.
+
+      // 1.1 Evaluar penalización de $20 MXN para el conductor si superó su cupo libre diario
+      double penalizacionConductor = 0.0;
+      if (role == 'Conductor' && driverId != null && driverId.isNotEmpty) {
+        final status = await getDriverCancellationStatus(driverId);
+        if (status['hasFee'] == true) {
+          penalizacionConductor = driverCancellationPenaltyFee; // $20.00 MXN
+        }
+      }
+
+      // Si canceló el conductor, obtener ubicación GPS y dirección exacta de cancelación
+      LatLng? finalDriverLoc = driverLocation;
+      String? cancellationAddress;
+      if (role == 'Conductor') {
+        if (finalDriverLoc == null) {
+          try {
+            finalDriverLoc = await LocationService().getCurrentLocation();
+          } catch (_) {}
+        }
+        if (finalDriverLoc != null) {
+          try {
+            cancellationAddress = await MapboxService().reverseGeocode(finalDriverLoc);
+          } catch (e) {
+            print('Error geocodificando ubicación de cancelación: $e');
+          }
+        }
+      }
+
+      // Generar URL del mapa estático (Mapbox Static Images API) con trayecto y punto de cancelación
+      LatLng? originLatLng = (originLat != null && originLng != null && originLat != 0 && originLng != 0)
+          ? LatLng(originLat, originLng)
+          : null;
+      LatLng? destLatLng = (destLat != null && destLng != null && destLat != 0 && destLng != 0)
+          ? LatLng(destLat, destLng)
+          : null;
+
+      String staticMapUrl = '';
+      try {
+        staticMapUrl = MapboxService.getStaticMapUrl(
+          origin: originLatLng,
+          destination: destLatLng,
+          driverLocation: finalDriverLoc,
+        );
+      } catch (e) {
+        print('Error generando mapa estático de cancelación: $e');
+      }
+
+      // 2. Obtener datos del conductor
+      Map<String, dynamic>? driverData;
+      if (driverId != null && driverId.isNotEmpty) {
         try {
-          final currentTrip = await _client.from('trips').select('driver_id').eq('id', tripId).maybeSingle();
-          final String? driverId = currentTrip?['driver_id'] as String? ?? _client.auth.currentUser?.id;
-          if (driverId != null) {
+          driverData = await _client
+              .from('conductores')
+              .select('nombre, nombre_completo, correo, telefono, placas, modelo_auto, color_auto')
+              .eq('user_id', driverId)
+              .maybeSingle();
+        } catch (_) {}
+
+        if (finalName == null || finalName.isEmpty || finalPhoto == null || finalPhoto.isEmpty) {
+          try {
             final driverInfo = await getDriverPublicInfo(driverId);
             finalName ??= driverInfo['name'];
             finalPhoto ??= driverInfo['photo'];
-          }
+          } catch (_) {}
+        }
+      }
+
+      final String resolvedDriverName = finalName ??
+          driverData?['nombre_completo'] ??
+          driverData?['nombre'] ??
+          'Conductor';
+      final String? driverEmail = driverData?['correo'] as String?;
+      final String? driverPhone = driverData?['telefono'] as String?;
+      final String? driverPlates = driverData?['placas'] as String?;
+      final String driverVehicle =
+          '${driverData?['modelo_auto'] ?? ''} ${driverData?['color_auto'] ?? ''}'.trim();
+
+      // 3. Obtener datos del pasajero
+      Map<String, dynamic>? passengerData;
+      if (userId != null && userId.isNotEmpty) {
+        try {
+          passengerData = await _client
+              .from('users')
+              .select('nombre, apellido, correo, telefono')
+              .eq('user_id', userId)
+              .maybeSingle();
         } catch (_) {}
       }
 
-      await _client.from('trips').update({
+      final String passengerName = '${passengerData?['nombre'] ?? ''} ${passengerData?['apellido'] ?? ''}'.trim();
+      final String resolvedPassengerName = passengerName.isNotEmpty ? passengerName : 'Pasajero';
+      final String? passengerEmail = passengerData?['correo'] as String?;
+      final String? passengerPhone = passengerData?['telefono'] as String?;
+
+      String finalReason = cancelReason ?? 'Cancelado por el $role';
+      if (penalizacionConductor > 0) {
+        finalReason = '$finalReason [Penalización aplicada: \$${penalizacionConductor.toStringAsFixed(2)} MXN]';
+      }
+      if (cancellationAddress != null && cancellationAddress.isNotEmpty) {
+        finalReason = '$finalReason (Lugar de cancelación: $cancellationAddress)';
+      }
+
+      // 4. Actualizar viaje en Supabase
+      final Map<String, dynamic> updatePayload = {
         'status': 'cancelled',
-        if (cancelReason != null) 'cancel_reason': cancelReason,
+        'cancel_reason': finalReason,
         if (finalName != null && finalName.isNotEmpty) 'name_driver': finalName,
         if (finalPhoto != null && finalPhoto.isNotEmpty) 'photo_driver': finalPhoto,
-      }).eq('id', tripId);
-      
-      // Notificar cancelación
+      };
+
+      if (penalizacionConductor > 0) {
+        try {
+          final penaltyPayload = Map<String, dynamic>.from(updatePayload);
+          penaltyPayload['penalizacion_conductor'] = penalizacionConductor;
+          await _client.from('trips').update(penaltyPayload).eq('id', tripId);
+        } catch (_) {
+          // Fallback seguro si la columna penalizacion_conductor aún no existe en Supabase
+          await _client.from('trips').update(updatePayload).eq('id', tripId);
+        }
+      } else {
+        await _client.from('trips').update(updatePayload).eq('id', tripId);
+      }
+
+      // Notificar cambio en tiempo real a clientes
       notifyTripStatusChange(tripId, 'cancelado');
-      
+
+      // 5. ENVIAR CORREOS MEDIANTE BREVO (En segundo plano)
+      // A) A los Super Administradores (Siempre que se cancele un viaje)
+      BrevoService.sendCancellationAlertToAdmins(
+        tripId: tripId,
+        cancelledByRole: role,
+        cancelReason: finalReason,
+        previousStatus: previousStatus,
+        passengerName: resolvedPassengerName,
+        passengerPhone: passengerPhone,
+        passengerEmail: passengerEmail,
+        driverName: driverId != null ? resolvedDriverName : null,
+        driverPhone: driverPhone,
+        driverEmail: driverEmail,
+        driverPlates: driverPlates,
+        driverVehicle: driverVehicle.isNotEmpty ? driverVehicle : null,
+        origin: originAddr,
+        destination: destAddr,
+        fare: fareVal,
+        driverCancellationAddress: cancellationAddress,
+        staticMapUrl: staticMapUrl.isNotEmpty ? staticMapUrl : null,
+        driverLocation: finalDriverLoc,
+      );
+
+      // B) Al Conductor (CON LETRAS GRANDES) si el Pasajero canceló y el conductor ya había aceptado
+      final bool wasAccepted = previousStatus == 'accepted' || previousStatus == 'arrived' || previousStatus == 'in_progress';
+      if (role == 'Pasajero' && driverId != null && wasAccepted) {
+        if (driverEmail != null && driverEmail.contains('@')) {
+          BrevoService.sendCancellationAlertToDriver(
+            driverEmail: driverEmail,
+            driverName: resolvedDriverName,
+            tripId: tripId,
+            passengerName: resolvedPassengerName,
+            origin: originAddr,
+            destination: destAddr,
+            cancelReason: finalReason,
+            fare: fareVal,
+          );
+        }
+      }
+
+      // C) Alertas de Cancelación por WhatsApp (En segundo plano)
+      try {
+        if (role == 'Pasajero' && wasAccepted && driverPhone != null && driverPhone.isNotEmpty) {
+          // Alerta con máxima visibilidad para el conductor
+          WhatsAppService.sendCancellationAlertToDriverWhatsApp(
+            driverPhone: driverPhone,
+            driverName: resolvedDriverName,
+            tripId: tripId,
+            passengerName: resolvedPassengerName,
+            origin: originAddr,
+            destination: destAddr,
+            cancelReason: finalReason,
+          );
+        } else if (role == 'Conductor' && passengerPhone != null && passengerPhone.isNotEmpty) {
+          // Aviso al pasajero de que el conductor canceló
+          WhatsAppService.sendTripCancelledWhatsApp(
+            toPhone: passengerPhone,
+            recipientName: resolvedPassengerName,
+            tripId: tripId,
+            cancelledByRole: 'el Conductor',
+            cancelReason: finalReason,
+            origin: originAddr,
+            destination: destAddr,
+          );
+        }
+
+        // Alerta por WhatsApp a Super Administradores
+        WhatsAppService.sendCancellationAlertToAdminsWhatsApp(
+          tripId: tripId,
+          cancelledByRole: role,
+          cancelReason: finalReason,
+          previousStatus: previousStatus,
+          passengerName: resolvedPassengerName,
+          passengerPhone: passengerPhone,
+          driverName: driverId != null ? resolvedDriverName : null,
+          driverPhone: driverPhone,
+          origin: originAddr,
+          destination: destAddr,
+          fare: fareVal,
+          driverCancellationAddress: cancellationAddress,
+        );
+      } catch (_) {}
+
       return true;
     } catch (e) {
       print('Error cancelando viaje: $e');

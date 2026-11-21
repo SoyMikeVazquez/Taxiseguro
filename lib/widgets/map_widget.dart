@@ -41,12 +41,12 @@ class _MapWidgetState extends State<MapWidget> {
   final MapboxService _mapboxService = MapboxService();
   final LocationService _locationService = LocationService();
 
-  LatLng _currentPosition = const LatLng(16.7569, -93.1292); // Default Tuxtla Gutiérrez, Chiapas
+  LatLng _currentPosition = LocationService.lastKnownLocation ?? const LatLng(19.4326, -99.1332);
   LatLng? _destinationLatLng;
   List<LatLng> _routePoints = [];
   StreamSubscription<LatLng>? _locationSubscription;
   
-  List<SimulatedCar> _simulatedCars = [];
+  final List<SimulatedCar> _simulatedCars = [];
   Timer? _simulationTimer;
   final Random _random = Random();
   static const String _mapboxToken = Env.mapboxApiKey;
@@ -55,10 +55,21 @@ class _MapWidgetState extends State<MapWidget> {
   void initState() {
     super.initState();
     _mapController = MapController();
+
+    if (widget.originLatLng != null) {
+      _currentPosition = widget.originLatLng!;
+    } else if (LocationService.lastKnownLocation != null) {
+      _currentPosition = LocationService.lastKnownLocation!;
+    }
+
     _initDeviceLocation().then((_) {
-      _triggerRouteCalculation();
+      if (widget.destination != null || widget.destinationLatLng != null) {
+        _triggerRouteCalculation();
+      }
     });
-    if (widget.destination != null || widget.destinationLatLng != null) {
+
+    if ((widget.originLatLng != null || LocationService.hasRealGpsFix) &&
+        (widget.destination != null || widget.destinationLatLng != null)) {
       _triggerRouteCalculation();
     }
   }
@@ -86,7 +97,9 @@ class _MapWidgetState extends State<MapWidget> {
       setState(() {
         _currentPosition = realPosition;
       });
-      _mapController.move(_currentPosition, 15.0);
+      if (widget.originLatLng == null && _destinationLatLng == null) {
+        _mapController.move(_currentPosition, 15.0);
+      }
       _initSimulatedCars();
     }
 
@@ -184,19 +197,19 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   Future<void> _geocodeDestination(String address) async {
-    final startPoint = widget.originLatLng ?? _currentPosition;
-    final places = await _mapboxService.searchPlaces(address, proximityLng: startPoint.longitude, proximityLat: startPoint.latitude);
+    final startPoint = widget.originLatLng ??
+        (LocationService.hasRealGpsFix ? _currentPosition : null) ??
+        LocationService.lastKnownLocation;
+    final places = await _mapboxService.searchPlaces(
+      address,
+      proximityLng: startPoint?.longitude,
+      proximityLat: startPoint?.latitude,
+    );
     if (places.isNotEmpty && mounted) {
       final topPlace = places.first;
       final coords = LatLng(topPlace.latitude, topPlace.longitude);
       setState(() {
         _destinationLatLng = coords;
-      });
-      _fetchRealRoute();
-    } else if (mounted) {
-      // Fallback si no hay geocodificación
-      setState(() {
-        _destinationLatLng = LatLng(startPoint.latitude + 0.02, startPoint.longitude + 0.02);
       });
       _fetchRealRoute();
     }
@@ -205,7 +218,15 @@ class _MapWidgetState extends State<MapWidget> {
   Future<void> _fetchRealRoute() async {
     if (_destinationLatLng == null) return;
 
-    final startPoint = widget.originLatLng ?? _currentPosition;
+    final startPoint = widget.originLatLng ??
+        (LocationService.hasRealGpsFix ? _currentPosition : null) ??
+        LocationService.lastKnownLocation;
+
+    if (startPoint == null) {
+      // Esperar a que el GPS resuelva la ubicación real
+      return;
+    }
+
     final routeResult = await _mapboxService.getDrivingRoute(startPoint, _destinationLatLng!);
 
     if (mounted) {
@@ -250,8 +271,8 @@ class _MapWidgetState extends State<MapWidget> {
             maxZoom: 18.0,
             minZoom: 2.0,
             onPositionChanged: (position, hasGesture) {
-              if (widget.onCameraMove != null && position.center != null) {
-                widget.onCameraMove!(position.center!);
+              if (widget.onCameraMove != null) {
+                widget.onCameraMove!(position.center);
               }
             },
           ),
@@ -316,10 +337,11 @@ class _MapWidgetState extends State<MapWidget> {
               MarkerLayer(
                 markers: [
                   // Marcador Origen (Ubicación GPS real o elegida en Amarillo)
-                  Marker(
-                    point: widget.originLatLng ?? _currentPosition,
-                    width: 36,
-                    height: 36,
+                  if (widget.originLatLng != null || LocationService.hasRealGpsFix)
+                    Marker(
+                      point: widget.originLatLng ?? _currentPosition,
+                      width: 36,
+                      height: 36,
                     child: Container(
                       decoration: BoxDecoration(
                         color: const Color(0xFFFFD700).withValues(alpha: 0.3),

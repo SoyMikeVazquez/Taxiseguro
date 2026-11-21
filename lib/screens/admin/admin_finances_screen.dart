@@ -21,9 +21,11 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
   bool _isLoading = true;
   bool _isGeneratingCorte = false;
   
-  double _ingresosBrutos = 0.0;
-  double _comisionApp = 0.0;
-  double _gananciaConductores = 0.0;
+  double _ingresosBrutos = 0.0; // Ingresos Reales Netos (sin extras de pasarela Mercado Pago)
+  double _gastoPasarelaMercadoPago = 0.0; // Monto extra cobrado/retenido por Mercado Pago (No es ingreso)
+
+  double _comisionApp = 0.0; // 20% para Administradores sobre Ingresos Reales
+  double _gananciaConductores = 0.0; // 80% para Conductores sobre Ingresos Reales
   double _retenciones = 0.0;
   
   // Desglose de Comisión
@@ -147,7 +149,7 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
           }
         }
 
-        // Crear un Trip simulado para la vista
+        // Crear un Trip simulado para la vista incluyendo su metodo_pago real
         filteredTrips.add(Trip(
           id: tripId ?? f['id']?.toString(),
           userId: '',
@@ -158,6 +160,7 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
           fare: fare,
           completedAt: tripDate,
           totalFinal: fare * 0.80,
+          paymentMethod: f['metodo_pago']?.toString() ?? 'efectivo',
         ));
       }
 
@@ -209,58 +212,74 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
   }
 
   void _calculateFinances(DateTime startDate, DateTime endDate, List<dynamic> driversData) {
-    double totalFare = 0.0;
-    Map<String, double> driverFares = {}; // Bruto por conductor
-    Map<String, double> driverEarned = {}; // Ganancia neta (total_final)
+    double totalIngresoReal = 0.0;
+    double totalGastoPasarelaMP = 0.0;
+
+    Map<String, double> driverFares = {}; // Ingreso Real Neto por conductor (sin pasarela MP)
+    Map<String, double> driverGrossFares = {}; // Cobro bruto con pasarela
+    Map<String, double> driverMpFees = {}; // Cargo Mercado Pago del conductor
+    Map<String, double> driverEarned = {}; // Ganancia neta (80% del Ingreso Real)
     Map<String, int> driverTrips = {};
 
     for (var trip in _trips) {
-      double fare = trip.fare ?? 0.0;
-      double earned = trip.totalFinal ?? (fare * 0.80); // 80% para el conductor
-      
-      totalFare += fare;
-      
+      final double fare = trip.fare ?? 0.0;
+      final String method = (trip.paymentMethod ?? 'efectivo').toLowerCase().trim();
+      final double cargoMp = AdminService.calcularCargoMercadoPago(fare, method);
+      final double ingresoReal = AdminService.calcularIngresoReal(fare, method);
+      final double earned = ingresoReal * 0.80; // 80% real para el conductor
+
+      totalGastoPasarelaMP += cargoMp;
+      totalIngresoReal += ingresoReal;
+
       if (trip.driverId != null) {
-        driverFares[trip.driverId!] = (driverFares[trip.driverId!] ?? 0.0) + fare;
+        driverFares[trip.driverId!] = (driverFares[trip.driverId!] ?? 0.0) + ingresoReal;
+        driverGrossFares[trip.driverId!] = (driverGrossFares[trip.driverId!] ?? 0.0) + fare;
+        driverMpFees[trip.driverId!] = (driverMpFees[trip.driverId!] ?? 0.0) + cargoMp;
         driverEarned[trip.driverId!] = (driverEarned[trip.driverId!] ?? 0.0) + earned;
         driverTrips[trip.driverId!] = (driverTrips[trip.driverId!] ?? 0) + 1;
       }
     }
 
-    _ingresosBrutos = totalFare;
-    _comisionApp = totalFare * 0.20; // Cambiado a 20% para coincidir con Dashboard
+    _ingresosBrutos = totalIngresoReal;
+    _gastoPasarelaMercadoPago = totalGastoPasarelaMP;
+
+    _comisionApp = totalIngresoReal * 0.20; // 20% para Administradores sobre Ingresos Reales (sin pasarela MP)
     _gananciaConductores = driverEarned.values.fold(0.0, (sum, val) => sum + val);
     
-    // Desglose del 20%
+    // Desglose del 20% de Administradores
     _comisionBancaria = _comisionApp * 0.20;
     _comisionTaxiSeguro = _comisionApp * 0.30;
     _referidoNivel1 = _comisionApp * 0.075;
     _referidoNivel2 = _comisionApp * 0.025;
     _accionistasSapi = _comisionApp * 0.40;
     
-    _retenciones = totalFare * 0.08; // Estimado 8%
+    _retenciones = totalIngresoReal * 0.08; // Estimado 8% sobre ingreso real
     _totalViajes = _trips.length;
-    _ticketPromedio = _totalViajes > 0 ? totalFare / _totalViajes : 0.0;
+    _ticketPromedio = _totalViajes > 0 ? totalIngresoReal / _totalViajes : 0.0;
 
     _driverStatsList.clear();
-    driverFares.forEach((driverId, fare) {
+    driverFares.forEach((driverId, realFare) {
       final driverInfo = driversData.firstWhere(
-        (d) => d['user_id'] == driverId, 
+        (d) => d['user_id'] == driverId || d['id']?.toString() == driverId, 
         orElse: () => <String, dynamic>{}
       );
-      String name = driverInfo['Nombre'] ?? 'Conductor Desconocido';
+      String name = driverInfo['nombre_completo'] ?? driverInfo['nombre'] ?? driverInfo['Nombre'] ?? 'Conductor';
       if (driverInfo['Apellidos'] != null) {
         name += ' ${driverInfo['Apellidos']}';
       }
 
-      double earned = driverEarned[driverId] ?? (fare * 0.80);
+      double earned = driverEarned[driverId] ?? (realFare * 0.80);
+      double mpFee = driverMpFees[driverId] ?? 0.0;
+      double grossFare = driverGrossFares[driverId] ?? realFare;
 
       _driverStatsList.add({
         'name': name,
-        'totalFare': fare,
+        'totalFare': realFare,
+        'grossFare': grossFare,
+        'mpFee': mpFee,
         'trips': driverTrips[driverId] ?? 0,
         'driverEarned': earned,
-        'appCommission': fare - earned, // Lo que resta es para la plataforma
+        'appCommission': realFare - earned, // 20% para Administradores
       });
     });
     
@@ -287,11 +306,11 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
       List<double> hourlyFares = List.filled(8, 0.0);
       for (var trip in _trips) {
         if (trip.completedAt != null) {
-          // Ajustamos hora local
+          // Ajustamos hora local (usando ingreso real sin pasarela MP)
           final localTime = trip.completedAt!.toLocal();
           int block = localTime.hour ~/ 3;
           if (block >= 0 && block < 8) {
-            hourlyFares[block] += (trip.fare ?? 0.0);
+            hourlyFares[block] += AdminService.calcularIngresoReal(trip.fare ?? 0.0, trip.paymentMethod);
           }
         }
       }
@@ -313,7 +332,7 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
         if (trip.completedAt != null) {
           final key = _formatDateString(trip.completedAt!.toLocal());
           if (dailyFares.containsKey(key)) {
-            dailyFares[key] = dailyFares[key]! + (trip.fare ?? 0.0);
+            dailyFares[key] = dailyFares[key]! + AdminService.calcularIngresoReal(trip.fare ?? 0.0, trip.paymentMethod);
           }
         }
       }
@@ -444,9 +463,9 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
             children: [
               Expanded(
                 child: _buildSummaryCard(
-                  'Ingresos Brutos',
+                  'Ingresos Reales',
                   '${_formatCurrency(_ingresosBrutos)} MXN',
-                  'Total',
+                  'Neto Plataforma',
                   Colors.black,
                   Icons.trending_up,
                 ),
@@ -454,9 +473,9 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: _buildSummaryCard(
-                  'Comisión App (20%)',
+                  'Administradores (20%)',
                   '${_formatCurrency(_comisionApp)} MXN',
-                  'Bruto',
+                  '20% de Ingreso Real',
                   const Color(0xFFC7FF2E),
                   Icons.account_balance,
                   isDark: true,
@@ -609,15 +628,22 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
                 ),
                 const SizedBox(height: 16),
                 _buildFinanceRow('Ganancia Conductores (80%)', _formatCurrency(_gananciaConductores), Colors.black87),
-                _buildFinanceRow('Comisión Plataforma (20%)', _formatCurrency(_comisionApp), Colors.black87, isBold: true),
+                _buildFinanceRow('Comisión Administradores (20%)', _formatCurrency(_comisionApp), Colors.black87, isBold: true),
                 const Divider(height: 16),
-                const Text('Detalle de Comisión Plataforma', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                const Text('Detalle de Comisión Administradores (20%)', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                _buildFinanceRow('• Bancaria (20% de comisión)', _formatCurrency(_comisionBancaria), Colors.red),
-                _buildFinanceRow('• Taxi Seguro (30% de comisión)', _formatCurrency(_comisionTaxiSeguro), Colors.green),
-                _buildFinanceRow('• Referido Nivel 1 (7.5% de comisión)', _formatCurrency(_referidoNivel1), Colors.amber),
-                _buildFinanceRow('• Referido Nivel 2 (2.5% de comisión)', _formatCurrency(_referidoNivel2), Colors.orange),
-                _buildFinanceRow('• Accionistas SAPI (40% de comisión)', _formatCurrency(_accionistasSapi), Colors.purple),
+                _buildFinanceRow('• Bancaria (20% de comisión)', _formatCurrency(_comisionBancaria), Colors.black87),
+                _buildFinanceRow('• Taxi Seguro (30% de comisión)', _formatCurrency(_comisionTaxiSeguro), Colors.black87),
+                _buildFinanceRow('• Referido Nivel 1 (7.5% de comisión)', _formatCurrency(_referidoNivel1), Colors.black87),
+                _buildFinanceRow('• Referido Nivel 2 (2.5% de comisión)', _formatCurrency(_referidoNivel2), Colors.black87),
+                _buildFinanceRow('• Accionistas SAPI (40% de comisión)', _formatCurrency(_accionistasSapi), Colors.black87),
+                const Divider(height: 24),
+                _buildFinanceRow('Comisión Pasarela Mercado Pago', _formatCurrency(_gastoPasarelaMercadoPago), Colors.grey),
+                const SizedBox(height: 4),
+                const Text(
+                  '* Las comisiones de pasarela de pago (Mercado Pago en tarjetas) no se contemplan como ingresos de la plataforma; se registran únicamente como gasto de procesamiento.',
+                  style: TextStyle(color: Colors.grey, fontSize: 11, fontStyle: FontStyle.italic),
+                ),
                 const Divider(height: 24),
                 _buildFinanceRow('Retenciones fiscales (estimado 8%)', _formatCurrency(_retenciones), Colors.grey),
                 const Divider(height: 24),
@@ -694,19 +720,49 @@ class _AdminFinancesScreenState extends State<AdminFinancesScreen> {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text('Total Generado', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                  const Text('Ingreso Real (Sin MP)', style: TextStyle(color: Colors.grey, fontSize: 11)),
                                   Text(_formatCurrency(stat['totalFare']), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                ],
+                              ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  const Text('Admins (20%)', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                  Text(_formatCurrency(stat['appCommission']), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
                                 ],
                               ),
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
-                                  const Text('Ganancia (80%)', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                  const Text('Conductor (80%)', style: TextStyle(color: Colors.grey, fontSize: 11)),
                                   Text(_formatCurrency(stat['driverEarned']), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green)),
                                 ],
                               ),
                             ],
                           ),
+                          if (((stat['mpFee'] as num?)?.toDouble() ?? 0.0) > 0) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.black,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'Cobro bruto c/tarjeta: ${_formatCurrency((stat['grossFare'] as num).toDouble())}',
+                                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                  ),
+                                  Text(
+                                    'Pasarela MP: -${_formatCurrency((stat['mpFee'] as num).toDouble())}',
+                                    style: const TextStyle(color: Color(0xFFFFD600), fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     );

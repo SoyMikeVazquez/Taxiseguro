@@ -121,10 +121,24 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final locService = LocationService();
     final currentLoc = await locService.getCurrentLocation();
-    final double originLat = _selectedOriginLatLng?.latitude ?? currentLoc?.latitude ?? GeofenceService.defaultChiapasCenter.latitude;
-    final double originLng = _selectedOriginLatLng?.longitude ?? currentLoc?.longitude ?? GeofenceService.defaultChiapasCenter.longitude;
+    final double? originLat = _selectedOriginLatLng?.latitude ?? currentLoc?.latitude ?? LocationService.lastKnownLocation?.latitude;
+    final double? originLng = _selectedOriginLatLng?.longitude ?? currentLoc?.longitude ?? LocationService.lastKnownLocation?.longitude;
 
-    // Validación de zona: Solo permitido en Chiapas
+    if (originLat == null || originLng == null) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No pudimos determinar tu punto de origen. Por favor selecciona tu ubicación en el mapa o escribe una dirección.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Validación de zona dinámica
     final bool canRequest = await GeofenceService.canRequestTrip(
       userId: user.id,
       origin: LatLng(originLat, originLng),
@@ -145,7 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             content: const Text(
-              'Por el momento, el servicio de TaxiSeguro solo está disponible para solicitar conductores dentro del estado de Chiapas.',
+              'Por el momento, el servicio de TaxiSeguro solo está disponible dentro de la zona de cobertura autorizada.',
               style: TextStyle(fontSize: 15, height: 1.4),
             ),
             actions: [

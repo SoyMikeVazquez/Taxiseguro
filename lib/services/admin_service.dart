@@ -6,12 +6,15 @@ import 'dart:convert';
 import 'driver_shift_service.dart';
 
 class DashboardFinancialData {
-  final double totalRevenue;
-  final double platformCommission;
+  final double totalRevenue; // Ingreso Real Neto (sin cargos de pasarela Mercado Pago)
+  final double grossRevenueWithGateway; // Cobro Bruto Total (incluyendo cargos de pasarela)
+  final double mercadoPagoGatewayFee; // Total retenido/gastado en pasarela Mercado Pago
+  final double platformCommission; // 20% para Administradores sobre Ingresos Reales
   final int totalTrips;
   final double cashTotal;
   final int cashTrips;
-  final double cardTotal;
+  final double cardTotal; // Ingreso Real Neto con Tarjeta (sin cargo MP)
+  final double cardGrossTotal; // Cobro Bruto con Tarjeta (con cargo MP)
   final int cardTrips;
   final List<FlSpot> chartSpots;
   final double maxY;
@@ -21,11 +24,14 @@ class DashboardFinancialData {
 
   DashboardFinancialData({
     required this.totalRevenue,
+    this.grossRevenueWithGateway = 0.0,
+    this.mercadoPagoGatewayFee = 0.0,
     required this.platformCommission,
     required this.totalTrips,
     required this.cashTotal,
     required this.cashTrips,
     required this.cardTotal,
+    this.cardGrossTotal = 0.0,
     required this.cardTrips,
     required this.chartSpots,
     required this.maxY,
@@ -37,11 +43,14 @@ class DashboardFinancialData {
   factory DashboardFinancialData.empty() {
     return DashboardFinancialData(
       totalRevenue: 0,
+      grossRevenueWithGateway: 0,
+      mercadoPagoGatewayFee: 0,
       platformCommission: 0,
       totalTrips: 0,
       cashTotal: 0,
       cashTrips: 0,
       cardTotal: 0,
+      cardGrossTotal: 0,
       cardTrips: 0,
       chartSpots: [const FlSpot(0, 0)],
       maxY: 100,
@@ -57,14 +66,17 @@ class DriverFullDetailData {
   final List<Map<String, dynamic>> allTrips;
   final double averageRating;
   final int totalRatings;
-  final double totalRevenue;
+  final double totalRevenue; // Ingreso Real Neto (sin pasarela MP)
+  final double grossRevenueWithGateway;
+  final double mercadoPagoGatewayFee;
   final List<Map<String, dynamic>> completedTrips;
   final List<Map<String, dynamic>> cancelledTrips;
-  final double platformCommission;
-  final double netEarnings;
+  final double platformCommission; // 20% de Ingreso Real Neto
+  final double netEarnings; // 80% de Ingreso Real Neto
   final double cashTotal;
   final int cashTrips;
-  final double cardTotal;
+  final double cardTotal; // Ingreso Real Neto en Tarjeta
+  final double cardGrossTotal; // Cobro Bruto en Tarjeta
   final int cardTrips;
   final bool isOnline;
   final DriverShiftStats shiftStats;
@@ -75,6 +87,8 @@ class DriverFullDetailData {
     required this.averageRating,
     required this.totalRatings,
     required this.totalRevenue,
+    this.grossRevenueWithGateway = 0.0,
+    this.mercadoPagoGatewayFee = 0.0,
     required this.completedTrips,
     required this.cancelledTrips,
     required this.platformCommission,
@@ -82,6 +96,7 @@ class DriverFullDetailData {
     required this.cashTotal,
     required this.cashTrips,
     required this.cardTotal,
+    this.cardGrossTotal = 0.0,
     required this.cardTrips,
     required this.isOnline,
     required this.shiftStats,
@@ -94,6 +109,8 @@ class DriverFullDetailData {
       averageRating: 0.0,
       totalRatings: 0,
       totalRevenue: 0.0,
+      grossRevenueWithGateway: 0.0,
+      mercadoPagoGatewayFee: 0.0,
       completedTrips: [],
       cancelledTrips: [],
       platformCommission: 0.0,
@@ -101,6 +118,7 @@ class DriverFullDetailData {
       cashTotal: 0.0,
       cashTrips: 0,
       cardTotal: 0.0,
+      cardGrossTotal: 0.0,
       cardTrips: 0,
       isOnline: driver['is_online'] == true,
       shiftStats: DriverShiftStats.empty(),
@@ -132,6 +150,41 @@ class AdminStats {
 
 class AdminService {
   final SupabaseClient _supabase = Supabase.instance.client;
+
+  /// Determina si el método de pago corresponde a tarjeta (débito/crédito/pasarela Mercado Pago)
+  static bool esPagoConTarjeta(String? paymentMethod) {
+    final m = (paymentMethod ?? 'efectivo').toLowerCase().trim();
+    if (m.contains('efectivo') || m.contains('cash')) return false;
+    return m.contains('tarjeta') ||
+        m.contains('mercadopago') ||
+        m.contains('card') ||
+        m.contains('debito') ||
+        m.contains('débito') ||
+        m.contains('credito') ||
+        m.contains('crédito') ||
+        m.contains('terminal');
+  }
+
+  /// Calcula el cargo extra cobrado por la pasarela de Mercado Pago:
+  /// (3.49% + $4.00 MXN) + 16% IVA.
+  /// REGLA GENERAL: Las pasarelas de pago NO se contemplan como ingresos;
+  /// solo se registran como mención del gasto de procesamiento en pagos con tarjeta.
+  /// Para pagos en efectivo siempre retorna 0.0.
+  static double calcularCargoMercadoPago(double fare, String? paymentMethod) {
+    if (fare <= 0 || !esPagoConTarjeta(paymentMethod)) return 0.0;
+    final double subtotalComision = (fare * 0.0349) + 4.00;
+    final double comisionConIva = subtotalComision * 1.16;
+    final double rounded = (comisionConIva * 100).roundToDouble() / 100.0;
+    return rounded > fare ? fare : rounded;
+  }
+
+  /// Calcula el ingreso real neto para TaxiSeguro y el conductor, quitando el cargo de Mercado Pago en pagos con tarjeta.
+  static double calcularIngresoReal(double fare, String? paymentMethod) {
+    if (fare <= 0) return 0.0;
+    final double cargoMp = calcularCargoMercadoPago(fare, paymentMethod);
+    final double neto = fare - cargoMp;
+    return neto > 0 ? (neto * 100).roundToDouble() / 100.0 : 0.0;
+  }
 
   /// Obtiene las estadísticas globales para el Dashboard de Super Admin
   Future<AdminStats> getDashboardStats() async {
@@ -177,8 +230,11 @@ class AdminService {
 
       double totalRevenue = 0.0;
       for (var t in trips) {
+        final status = (t['status'] ?? '').toString().toLowerCase().trim();
+        if (status == 'cancelled' || status == 'cancelado') continue;
         final fare = (t['fare'] as num?)?.toDouble() ?? 0.0;
-        totalRevenue += fare;
+        final method = (t['metodo_pago'] ?? t['payment_method'] ?? 'efectivo').toString();
+        totalRevenue += calcularIngresoReal(fare, method);
       }
 
       final double platformCommission = totalRevenue * 0.20;
@@ -463,10 +519,13 @@ class AdminService {
         }
       }
 
-      double totalRevenue = 0.0;
+      double totalRevenue = 0.0; // Ingreso Real Neto (sin pasarela MP)
+      double grossRevenueWithGateway = 0.0;
+      double mercadoPagoGatewayFee = 0.0;
       double cashTotal = 0.0;
       int cashTrips = 0;
-      double cardTotal = 0.0;
+      double cardTotal = 0.0; // Ingreso Real Neto Tarjeta
+      double cardGrossTotal = 0.0; // Cobro Bruto Tarjeta
       int cardTrips = 0;
       int countTrips = 0;
 
@@ -505,14 +564,21 @@ class AdminService {
             .toLowerCase()
             .trim();
 
-        totalRevenue += fare;
+        final bool isCard = esPagoConTarjeta(rawMethod);
+        final double cargoMp = calcularCargoMercadoPago(fare, rawMethod);
+        final double ingresoReal = calcularIngresoReal(fare, rawMethod);
+
+        grossRevenueWithGateway += fare;
+        mercadoPagoGatewayFee += cargoMp;
+        totalRevenue += ingresoReal;
         countTrips++;
 
-        if (rawMethod.contains('efectivo') || rawMethod.contains('cash')) {
+        if (!isCard) {
           cashTotal += fare;
           cashTrips++;
         } else {
-          cardTotal += fare;
+          cardGrossTotal += fare;
+          cardTotal += ingresoReal;
           cardTrips++;
         }
 
@@ -520,12 +586,12 @@ class AdminService {
           if (isSingleDay) {
             int block = tripDate.hour ~/ 3;
             if (block >= 0 && block < 8) {
-              hourlyFares[block] += fare;
+              hourlyFares[block] += ingresoReal;
             }
           } else {
             int dayIndex = tripDate.difference(startFilter).inDays;
             if (dayIndex >= 0 && dayIndex <= diffDays) {
-              dailyFares[dayIndex] = (dailyFares[dayIndex] ?? 0.0) + fare;
+              dailyFares[dayIndex] = (dailyFares[dayIndex] ?? 0.0) + ingresoReal;
             }
           }
         }
@@ -558,11 +624,14 @@ class AdminService {
 
       return DashboardFinancialData(
         totalRevenue: totalRevenue,
+        grossRevenueWithGateway: grossRevenueWithGateway,
+        mercadoPagoGatewayFee: mercadoPagoGatewayFee,
         platformCommission: platformCommission,
         totalTrips: countTrips,
         cashTotal: cashTotal,
         cashTrips: cashTrips,
         cardTotal: cardTotal,
+        cardGrossTotal: cardGrossTotal,
         cardTrips: cardTrips,
         chartSpots: chartSpots.isEmpty ? [const FlSpot(0, 0)] : chartSpots,
         maxY: maxY,
@@ -607,10 +676,13 @@ class AdminService {
       List<Map<String, dynamic>> completedTrips = [];
       List<Map<String, dynamic>> cancelledTrips = [];
 
-      double totalRevenue = 0.0;
+      double totalRevenue = 0.0; // Ingreso Real Neto (sin pasarela MP)
+      double grossRevenueWithGateway = 0.0;
+      double mercadoPagoGatewayFee = 0.0;
       double cashTotal = 0.0;
       int cashTrips = 0;
-      double cardTotal = 0.0;
+      double cardTotal = 0.0; // Ingreso Real Neto en Tarjeta
+      double cardGrossTotal = 0.0; // Cobro Bruto en Tarjeta
       int cardTrips = 0;
 
       for (var trip in allTrips) {
@@ -619,13 +691,21 @@ class AdminService {
         if (isCompleted) {
           completedTrips.add(trip);
           final fare = (trip['fare'] as num?)?.toDouble() ?? 0.0;
-          totalRevenue += fare;
-          final method = (trip['metodo_pago'] ?? trip['payment_method'] ?? '').toString().toLowerCase();
-          if (method.contains('efectivo') || method.contains('cash')) {
+          final method = (trip['metodo_pago'] ?? trip['payment_method'] ?? 'efectivo').toString().toLowerCase();
+          final bool isCard = esPagoConTarjeta(method);
+          final double cargoMp = calcularCargoMercadoPago(fare, method);
+          final double ingresoReal = calcularIngresoReal(fare, method);
+
+          grossRevenueWithGateway += fare;
+          mercadoPagoGatewayFee += cargoMp;
+          totalRevenue += ingresoReal;
+
+          if (!isCard) {
             cashTotal += fare;
             cashTrips++;
           } else {
-            cardTotal += fare;
+            cardGrossTotal += fare;
+            cardTotal += ingresoReal;
             cardTrips++;
           }
         } else if (status == 'cancelled' || status == 'cancelado') {
@@ -651,6 +731,8 @@ class AdminService {
         averageRating: avgRating,
         totalRatings: count,
         totalRevenue: totalRevenue,
+        grossRevenueWithGateway: grossRevenueWithGateway,
+        mercadoPagoGatewayFee: mercadoPagoGatewayFee,
         completedTrips: completedTrips,
         cancelledTrips: cancelledTrips,
         platformCommission: platformCommission,
@@ -658,6 +740,7 @@ class AdminService {
         cashTotal: cashTotal,
         cashTrips: cashTrips,
         cardTotal: cardTotal,
+        cardGrossTotal: cardGrossTotal,
         cardTrips: cardTrips,
         isOnline: isOnline,
         shiftStats: shiftStats,
@@ -816,6 +899,68 @@ class AdminService {
         // 2. Coincidencia por nombre / ID para compatibilidad
         return candidateNames.any((name) => ref == name || ref.contains(name) || name.contains(ref));
       }).toList();
+
+      // 3. Consultar también en la nueva tabla 'public.referidos'
+      try {
+        final List<String> possibleIds = [];
+        if (driverUserId != null && driverUserId.isNotEmpty) possibleIds.add(driverUserId);
+        if (driverId != null && driverId.isNotEmpty) possibleIds.add(driverId);
+
+        List<dynamic> refRows = [];
+        if (possibleIds.isNotEmpty) {
+          final res = await _supabase.from('referidos').select('id, referido_id, tipo_referido, estado, comision_monto, created_at, activado_at, telefono_referente').inFilter('referente_id', possibleIds);
+          refRows = (res as List<dynamic>?) ?? [];
+        } else if (cleanDriverPhone.isNotEmpty) {
+          final res = await _supabase.from('referidos').select('id, referido_id, tipo_referido, estado, comision_monto, created_at, activado_at, telefono_referente').eq('telefono_referente', cleanDriverPhone);
+          refRows = (res as List<dynamic>?) ?? [];
+        }
+
+        if (refRows.isNotEmpty) {
+          final List<String> userIds = [];
+          for (var r in refRows) {
+            final uid = r['referido_id']?.toString();
+            if (uid != null && uid.isNotEmpty) userIds.add(uid);
+          }
+
+          if (userIds.isNotEmpty) {
+            final uRes = await _supabase
+                .from('users')
+                .select('id, user_id, nombre, correo, telefono, imagen_perfil, fotodeperfil, created_at')
+                .inFilter('user_id', userIds);
+
+            final Map<String, Map<String, dynamic>> userMap = {};
+            for (var u in (uRes as List)) {
+              userMap[u['user_id'].toString()] = Map<String, dynamic>.from(u);
+            }
+
+            for (var r in refRows) {
+              final uid = r['referido_id'].toString();
+              final u = userMap[uid];
+              final isAct = r['estado'] == 'activo';
+              final com = (r['comision_monto'] as num?)?.toDouble() ?? 0.0;
+
+              final alreadyIn = filtered.any((item) => (item['user_id'] ?? item['id']) == uid);
+              if (!alreadyIn) {
+                filtered.add({
+                  'id': r['id'],
+                  'user_id': uid,
+                  'nombre': u?['nombre'] ?? 'Usuario',
+                  'correo': u?['correo'] ?? '',
+                  'telefono': u?['telefono'] ?? '',
+                  'imagen_perfil': u?['imagen_perfil'] ?? u?['fotodeperfil'],
+                  'referido': cleanDriverPhone,
+                  'time_referido': r['activado_at'] ?? r['created_at'],
+                  'created_at': r['created_at'],
+                  'usuario_activado': isAct,
+                  'comision_referido': com,
+                });
+              }
+            }
+          }
+        }
+      } catch (tableErr) {
+        // Ignorar si aún se está sincronizando
+      }
 
       return filtered;
     } catch (e) {

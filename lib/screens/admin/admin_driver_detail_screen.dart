@@ -412,7 +412,7 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
         Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: isOnline ? const Color(0xFF0F172A) : Colors.grey.shade100,
+            color: isOnline ? const Color(0xFF1E1E1E) : Colors.grey.shade100,
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
               color: isOnline ? const Color(0xFFC7FF2E).withValues(alpha: 0.5) : Colors.grey.shade300,
@@ -808,33 +808,121 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
         ),
         const SizedBox(height: 14),
 
-        // 1. Ingresos Totales Generados
+        // 1. Ingresos Totales Generados (Reales sin pasarela MP)
         _buildFinanceMetricCard(
-          'Ingresos Totales Generados',
+          'Ingresos Reales Generados (Sin Pasarela MP)',
           '${_formatCurrency(_detailData.totalRevenue)} MXN',
-          '${_detailData.completedTrips.length} viajes completados',
+          '${_detailData.completedTrips.length} viajes completados • Excluye comisión Mercado Pago',
           Icons.attach_money,
           Colors.black,
         ),
         const SizedBox(height: 14),
 
-        // 2. Comisiones Taxiseguro (20%)
+        // 2. Comisiones Administradores / Taxiseguro (20%)
         _buildFinanceMetricCard(
-          'Comisiones Taxiseguro (20%)',
+          'Comisión Administradores (20% Real)',
           '${_formatCurrency(_detailData.platformCommission)} MXN',
-          'Retención estimada de plataforma',
+          '20% sobre ingresos reales libres de pasarela',
           Icons.percent,
           Colors.orange,
         ),
         const SizedBox(height: 14),
 
-        // 3. Monto Neto a Pagar / Transferido
+        // 3. Monto Neto a Pagar / Transferido (80%)
         _buildFinanceMetricCard(
-          'Monto Neto a Pagar / Transferido',
+          'Ganancia Neta Conductor (80% Real)',
           '${_formatCurrency(_detailData.netEarnings)} MXN',
-          'Ganancia neta del conductor (85%)',
+          '80% sobre ingresos reales libres de pasarela',
           Icons.account_balance_wallet,
           Colors.green,
+        ),
+        const SizedBox(height: 14),
+
+        // 3.1 División de Pasarela Mercado Pago del Conductor
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF141414),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: const [
+                      Icon(Icons.credit_score_rounded, color: Color(0xFFC7FF2E), size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        'División Pasarela Mercado Pago',
+                        style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'NO ES INGRESO',
+                      style: TextStyle(color: Color(0xFFC7FF2E), fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Cobro bruto en tarjetas (${_detailData.cardTrips} viajes):', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text('${_formatCurrency(_detailData.cardGrossTotal)} MXN', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Extras cobrados por Mercado Pago (3.49% + \$4 + IVA):', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text('-${_formatCurrency(_detailData.mercadoPagoGatewayFee)} MXN', style: const TextStyle(color: Color(0xFFFFD600), fontWeight: FontWeight.bold, fontSize: 12)),
+                ],
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Divider(color: Colors.white24, height: 1),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Ingreso real neto en tarjetas:', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                  Text('${_formatCurrency(_detailData.cardTotal)} MXN', style: const TextStyle(color: Color(0xFFC7FF2E), fontWeight: FontWeight.bold, fontSize: 13)),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+
+        // 4. Wallet de Referidos (Bono 20%)
+        Builder(
+          builder: (context) {
+            final activeRefs = _referrals.where((u) => u['usuario_activado'] == true).toList();
+            final double totalWallet = activeRefs.fold(0.0, (sum, u) => sum + ((u['comision_referido'] as num?)?.toDouble() ?? 0.0));
+            return _buildFinanceMetricCard(
+              'Wallet de Referidos (Bono 20%)',
+              '${_formatCurrency(totalWallet)} MXN',
+              '${activeRefs.length} usuarios activos de ${_referrals.length} registrados • Toca para ver',
+              Icons.account_balance_wallet_rounded,
+              const Color(0xFF2E7D32),
+              onTap: () {
+                _tabController.animateTo(3); // Cambiar a pestaña de Referidos
+              },
+            );
+          },
         ),
         const SizedBox(height: 24),
 
@@ -1213,8 +1301,8 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
   // ==========================================
   // HELPERS COMUNES
   // ==========================================
-  Widget _buildFinanceMetricCard(String title, String amount, String subtitle, IconData icon, Color color) {
-    return Container(
+  Widget _buildFinanceMetricCard(String title, String amount, String subtitle, IconData icon, Color color, {VoidCallback? onTap}) {
+    Widget card = Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1241,9 +1329,20 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
               ],
             ),
           ),
+          if (onTap != null)
+            const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.black38),
         ],
       ),
     );
+
+    if (onTap != null) {
+      return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: card,
+      );
+    }
+    return card;
   }
 
   Widget _buildInfoRow(String label, String value, {IconData? icon, VoidCallback? onAction}) {
@@ -1484,7 +1583,7 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
                     border: Border.all(color: const Color(0xFFC7FF2E), width: 1.5),
                   ),
                   child: const Center(
-                    child: Icon(Icons.monetization_on, color: Color(0xFFC7FF2E), size: 28),
+                    child: Icon(Icons.account_balance_wallet_rounded, color: Color(0xFFC7FF2E), size: 28),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -1495,7 +1594,7 @@ class _AdminDriverDetailScreenState extends State<AdminDriverDetailScreen> with 
                       Row(
                         children: [
                           const Text(
-                            'COMISIÓN POR REFERIDOS',
+                            'WALLET • COMISIÓN POR REFERIDOS',
                             style: TextStyle(
                               fontFamily: 'Google Sans',
                               fontSize: 11,

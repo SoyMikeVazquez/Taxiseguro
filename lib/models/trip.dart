@@ -22,6 +22,7 @@ class Trip {
   final double? totalFinal; // Ganancia del conductor (80%)
   final bool? isReview; // Indica si el pasajero ya calificó el viaje
   final int? codigo; // Código de 5 dígitos para verificar el viaje (estilo Uber)
+  final String? cancelReason;
 
   Trip({
     this.id,
@@ -47,6 +48,7 @@ class Trip {
     this.totalFinal,
     this.isReview,
     this.codigo,
+    this.cancelReason,
   });
 
   factory Trip.fromJson(Map<String, dynamic> json) {
@@ -74,6 +76,7 @@ class Trip {
       totalFinal: json['total_final'] != null ? (json['total_final'] as num).toDouble() : null,
       isReview: json['isReview'] == true || json['is_review'] == true,
       codigo: json['codigo'] != null ? num.tryParse(json['codigo'].toString())?.toInt() : null,
+      cancelReason: json['cancel_reason']?.toString(),
     );
   }
 
@@ -102,6 +105,7 @@ class Trip {
       if (totalFinal != null) 'total_final': totalFinal,
       if (isReview != null) 'isReview': isReview,
       if (codigo != null) 'codigo': codigo,
+      if (cancelReason != null) 'cancel_reason': cancelReason,
     };
   }
 
@@ -129,6 +133,7 @@ class Trip {
     double? totalFinal,
     bool? isReview,
     int? codigo,
+    String? cancelReason,
   }) {
     return Trip(
       id: id ?? this.id,
@@ -154,6 +159,7 @@ class Trip {
       totalFinal: totalFinal ?? this.totalFinal,
       isReview: isReview ?? this.isReview,
       codigo: codigo ?? this.codigo,
+      cancelReason: cancelReason ?? this.cancelReason,
     );
   }
 }

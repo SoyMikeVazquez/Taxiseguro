@@ -13,6 +13,7 @@ import '../services/location_service.dart';
 import '../services/background_service.dart';
 import '../env/env.dart';
 import '../services/rating_service.dart';
+import '../widgets/emergency_dialog.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 class ActiveTripScreen extends StatefulWidget {
   final Trip trip;
@@ -93,7 +94,18 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   Future<void> _cancelTripDueToTimeout() async {
     if (_currentTrip.id == null || _currentTrip.status == 'cancelled') return;
-    await _tripService.updateTripStatus(_currentTrip.id!, 'cancelled');
+    LatLng? loc = _driverLocation;
+    if (loc == null) {
+      try {
+        loc = await LocationService().getCurrentLocation();
+      } catch (_) {}
+    }
+    await _tripService.cancelTrip(
+      _currentTrip.id!,
+      cancelReason: 'Cancelado automáticamente: tiempo de espera de 7 minutos excedido (pasajero no se presentó)',
+      cancelledBy: 'sistema',
+      driverLocation: loc,
+    );
     BackgroundServiceHelper.stopDriverTrip();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -124,9 +136,10 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     _tripSubscription = _tripService.streamTrip(_currentTrip.id!).listen((trip) {
       if (trip != null && mounted) {
         if (trip.status == 'cancelled' && _currentTrip.status != 'cancelled') {
-          // El pasajero canceló el viaje
-          BackgroundServiceHelper.showAlertNotification('Viaje Cancelado', 'El pasajero ha cancelado el viaje.');
-          BackgroundServiceHelper.updateDriverTripStatus('Viaje Cancelado', 'El pasajero ha cancelado el viaje');
+          // El pasajero cancelo el viaje
+          BackgroundServiceHelper.notifyTripCancelled(
+            reason: 'El pasajero ha cancelado el viaje.',
+          );
           _showTripCancelledDialog();
         } else {
           setState(() {
@@ -263,10 +276,23 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     }
     
     if (success) {
+      final fareStr = _currentTrip.fare != null ? '\$${_currentTrip.fare!.toStringAsFixed(2)} MXN' : null;
       if (newStatus == 'arrived') {
-        BackgroundServiceHelper.updateDriverTripStatus('Has llegado', 'Esperando al pasajero');
+        BackgroundServiceHelper.updateDriverTripStatus(
+          'Has llegado',
+          'Esperando al pasajero',
+          passengerName: _passengerInfo?['name'] as String?,
+          destination: _currentTrip.destinationAddress,
+          fare: fareStr,
+        );
       } else if (newStatus == 'in_progress') {
-        BackgroundServiceHelper.updateDriverTripStatus('Viaje en curso', 'Dirigiéndote al destino');
+        BackgroundServiceHelper.updateDriverTripStatus(
+          'Viaje en curso',
+          'Dirigiendote al destino',
+          passengerName: _passengerInfo?['name'] as String?,
+          destination: _currentTrip.destinationAddress,
+          fare: fareStr,
+        );
       } else if (newStatus == 'completed') {
         BackgroundServiceHelper.stopDriverTrip();
       }
@@ -565,24 +591,82 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     );
   }
 
-  void _showCancelDialog() {
+  Future<void> _showCancelDialog() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    Map<String, dynamic>? cancelStatus;
+    if (user != null) {
+      try {
+        cancelStatus = await _tripService.getDriverCancellationStatus(user.id);
+      } catch (_) {}
+    }
+
+    final bool hasFee = cancelStatus?['hasFee'] ?? false;
+    final int todayCount = cancelStatus?['count'] ?? 0;
+    final int freeLimit = cancelStatus?['freeLimit'] ?? 3;
+    final int remainingFree = cancelStatus?['remainingFree'] ?? (freeLimit - todayCount).clamp(0, freeLimit);
+    final double feeAmount = (cancelStatus?['feeAmount'] as num?)?.toDouble() ?? 20.0;
+
+    if (!mounted) return;
+
     final TextEditingController reasonController = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-        title: const Text(
-          'Cancelar Viaje',
-          style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold),
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.cancel_outlined, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text(
+              'Cancelar Viaje',
+              style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+          ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Estatus de cancelaciones libres o con penalización
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                color: hasFee ? const Color(0xFFFEF3C7) : const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: hasFee ? const Color(0xFFF59E0B) : const Color(0xFF86EFAC)),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    hasFee ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                    color: hasFee ? const Color(0xFFD97706) : const Color(0xFF16A34A),
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      hasFee
+                          ? 'Cancelaciones libres agotadas ($todayCount hoy). Se descontarán \$${feeAmount.toStringAsFixed(0)} MXN en tu corte.'
+                          : 'Cancelaciones libres hoy: $todayCount de $freeLimit ($remainingFree restantes sin costo).',
+                      style: TextStyle(
+                        fontFamily: 'Inter',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        color: hasFee ? const Color(0xFF92400E) : const Color(0xFF166534),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             const Text(
               'Por favor, indica el motivo de la cancelación:',
-              style: TextStyle(fontFamily: 'Inter', color: Colors.black54),
+              style: TextStyle(fontFamily: 'Inter', color: Colors.black87, fontSize: 13),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             TextField(
               controller: reasonController,
               decoration: InputDecoration(
@@ -590,7 +674,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                 filled: true,
                 fillColor: const Color(0xFFF3F3F3),
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                   borderSide: BorderSide.none,
                 ),
               ),
@@ -601,7 +685,10 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Volver', style: TextStyle(fontFamily: 'Google Sans', color: Colors.grey, fontWeight: FontWeight.bold)),
+            child: const Text(
+              'Volver',
+              style: TextStyle(fontFamily: 'Google Sans', color: Colors.grey, fontWeight: FontWeight.bold),
+            ),
           ),
           ElevatedButton(
             onPressed: () async {
@@ -613,11 +700,14 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               _cancelTrip(reasonController.text.trim());
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
+              backgroundColor: hasFee ? Colors.redAccent : Colors.black87,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             ),
-            child: const Text('Cancelar Viaje', style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold)),
+            child: Text(
+              hasFee ? 'Aceptar y Cancelar (\$20 MXN)' : 'Cancelar Viaje',
+              style: const TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
@@ -638,24 +728,72 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     if (_currentTrip.id != 'simulated_trip_123') {
       final driverInfo = await _getDriverInfo();
       final finalReason = reason.trim().isNotEmpty ? reason.trim() : 'Cancelado por el conductor';
+      LatLng? loc = _driverLocation;
+      if (loc == null) {
+        try {
+          loc = await LocationService().getCurrentLocation();
+        } catch (_) {}
+      }
       success = await _tripService.cancelTrip(
         _currentTrip.id!,
         cancelReason: finalReason,
         nameDriver: driverInfo['name'],
         photoDriver: driverInfo['photo'],
+        cancelledBy: 'conductor',
+        driverLocation: loc,
       );
     }
     
     setState(() => _isLoading = false);
     if (success) {
+      BackgroundServiceHelper.notifyTripCancelled(
+        reason: 'Has cancelado el viaje.',
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Viaje cancelado')));
         Navigator.of(context).popUntil((route) => route.isFirst); // Regresar al home de forma segura
       }
     } else {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error al cancelar el viaje'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo cancelar el viaje. Verifica si alcanzaste el límite diario.'), backgroundColor: Colors.red));
       }
+    }
+  }
+
+  Future<void> _callPassenger() async {
+    final messenger = ScaffoldMessenger.of(context);
+    String? phone = _passengerInfo?['phone']?.toString();
+
+    if ((phone == null || phone.trim().isEmpty) && _currentTrip.userId.isNotEmpty) {
+      try {
+        final info = await _tripService.getPassengerPublicInfo(_currentTrip.userId);
+        phone = info['phone']?.toString();
+      } catch (_) {}
+    }
+
+    if (phone != null && phone.trim().isNotEmpty) {
+      final cleanPhone = phone.replaceAll(RegExp(r'[^\d+]'), '');
+      final Uri url = Uri.parse('tel:$cleanPhone');
+      try {
+        if (await canLaunchUrl(url)) {
+          await launchUrl(url);
+          return;
+        } else {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (e) {
+        debugPrint('Error llamando al pasajero: $e');
+      }
+    }
+
+    if (mounted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Número de teléfono del pasajero no disponible.'),
+          backgroundColor: Colors.black87,
+        ),
+      );
     }
   }
 
@@ -686,7 +824,9 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   void _showPaymentBottomSheet() {
     double fareAmount = _currentTrip.fare ?? 0.0;
 
-    if (_currentTrip.paymentMethod == 'tarjeta') {
+    final isDigitalPayment = _currentTrip.paymentMethod == 'tarjeta' ||
+        _currentTrip.paymentMethod == 'mercadopago';
+    if (isDigitalPayment) {
       _showReviewBottomSheet(fareAmount);
       return;
     }
@@ -980,6 +1120,33 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
         centerTitle: true,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: TextButton.icon(
+              onPressed: () => EmergencyDialog.show(
+                context,
+                isDriver: true,
+                trip: _currentTrip,
+                currentLocation: _driverLocation,
+              ),
+              icon: const Icon(Icons.emergency, color: Colors.white, size: 16),
+              label: const Text(
+                '911 SOS',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 12,
+                ),
+              ),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0xFFDC2626),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            ),
+          ),
+        ],
       ),
       backgroundColor: Colors.black,
       body: Stack(
@@ -1046,6 +1213,44 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                   ],
                 ),
               ],
+            ),
+          ),
+
+          // Botón Flotante Asistencia 911 en el Mapa
+          Positioned(
+            top: 16,
+            right: 16,
+            child: Material(
+              color: const Color(0xFFDC2626),
+              elevation: 4,
+              borderRadius: BorderRadius.circular(24),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(24),
+                onTap: () => EmergencyDialog.show(
+                  context,
+                  isDriver: true,
+                  trip: _currentTrip,
+                  currentLocation: _driverLocation,
+                ),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.shield, color: Colors.white, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        '911 SOS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
           
@@ -1131,6 +1336,77 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                                     ),
                                   ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          // Botón para llamar directamente al pasajero
+                          Material(
+                            color: Colors.white,
+                            shape: const CircleBorder(),
+                            elevation: 1,
+                            child: InkWell(
+                              customBorder: const CircleBorder(),
+                              onTap: _callPassenger,
+                              child: const Padding(
+                                padding: EdgeInsets.all(10),
+                                child: Icon(Icons.phone, color: Colors.black87, size: 22),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Badge Metodo de Pago
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _currentTrip.paymentMethod == 'mercadopago'
+                            ? const Color(0xFF009EE3).withOpacity(0.1)
+                            : Colors.green.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _currentTrip.paymentMethod == 'mercadopago'
+                              ? const Color(0xFF009EE3).withOpacity(0.3)
+                              : Colors.green.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _currentTrip.paymentMethod == 'mercadopago'
+                                ? Icons.credit_card
+                                : Icons.payments_outlined,
+                            color: _currentTrip.paymentMethod == 'mercadopago'
+                                ? const Color(0xFF009EE3)
+                                : Colors.green[700],
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _currentTrip.paymentMethod == 'mercadopago'
+                                      ? 'Pago con Mercado Pago'
+                                      : 'Pago en Efectivo',
+                                  style: TextStyle(
+                                    fontFamily: 'Google Sans',
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                    color: _currentTrip.paymentMethod == 'mercadopago'
+                                        ? const Color(0xFF009EE3)
+                                        : Colors.green[800],
+                                  ),
+                                ),
+                                Text(
+                                  _currentTrip.paymentMethod == 'mercadopago'
+                                      ? 'Viaje pagado en linea. NO cobrar efectivo al pasajero.'
+                                      : 'Cobrar \$${(_currentTrip.fare ?? 0.0).toStringAsFixed(2)} al finalizar el viaje.',
+                                  style: const TextStyle(fontFamily: 'Inter', fontSize: 11, color: Colors.black87),
                                 ),
                               ],
                             ),
@@ -1246,30 +1522,15 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
                       const SizedBox(height: 16),
                     ],
                     
-                    // Botones de Contacto (Solo en 'arrived' - Esperando Pasajero)
-                    if (_currentTrip.status == 'arrived') ...[
+                    // Botones de Contacto (Disponible en todo momento durante el viaje)
+                    if (_currentTrip.status == 'accepted' || _currentTrip.status == 'arrived' || _currentTrip.status == 'in_progress') ...[
                       Row(
                         children: [
                           Expanded(
                             child: SizedBox(
                               height: 50,
                               child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  final phone = _passengerInfo?['phone'];
-                                  if (phone != null && phone.toString().isNotEmpty) {
-                                    final Uri url = Uri.parse('tel:$phone');
-                                    if (await canLaunchUrl(url)) {
-                                      await launchUrl(url);
-                                      return;
-                                    }
-                                  }
-                                  if (mounted) {
-                                    messenger.showSnackBar(
-                                      const SnackBar(content: Text('Número de teléfono del pasajero no disponible.')),
-                                    );
-                                  }
-                                },
+                                onPressed: _callPassenger,
                                 icon: const Icon(Icons.phone, size: 20),
                                 label: const Text('Llamar', style: TextStyle(fontFamily: 'Google Sans', fontWeight: FontWeight.bold, fontSize: 15)),
                                 style: ElevatedButton.styleFrom(

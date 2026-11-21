@@ -2,8 +2,19 @@ import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class GeofenceService {
+  /// Interruptor maestro: permite suspender momentáneamente la restricción regional
+  /// para que la plataforma funcione en toda la República Mexicana.
+  /// Cambiar a 'true' cuando se desee restablecer la exclusividad territorial de Chiapas.
+  static const bool isGeofenceActive = false;
+
   /// Centro por defecto en Chiapas (Tuxtla Gutiérrez)
   static const LatLng defaultChiapasCenter = LatLng(16.7569, -93.1292);
+
+  // Bounding Box de la República Mexicana
+  static const double mexicoMinLat = 14.50;
+  static const double mexicoMaxLat = 32.75;
+  static const double mexicoMinLng = -118.40;
+  static const double mexicoMaxLng = -86.70;
 
   // Bounding Box del Estado de Chiapas para descarte rápido en O(1)
   static const double minLat = 14.50;
@@ -148,19 +159,23 @@ class GeofenceService {
     }
   }
 
+  /// Verifica si una coordenada geográfica se encuentra dentro del territorio mexicano
+  static bool isWithinMexico(LatLng point) {
+    final lat = point.latitude;
+    final lng = point.longitude;
+    return lat >= mexicoMinLat &&
+        lat <= mexicoMaxLat &&
+        lng >= mexicoMinLng &&
+        lng <= mexicoMaxLng;
+  }
+
   /// Regla de negocio principal:
-  /// Retorna `true` si el servicio se puede solicitar (está dentro de Chiapas O el usuario cuenta con permiso especial).
+  /// Retorna `true` para permitir el servicio en cualquier zona de la República Mexicana.
   static Future<bool> canRequestTrip({
     required String userId,
     required LatLng origin,
   }) async {
-    // Si el punto de recogida está en Chiapas, se permite a cualquier usuario
-    if (isWithinChiapas(origin)) {
-      return true;
-    }
-
-    // Si está fuera de Chiapas, verificar si el usuario tiene permiso especial
-    final bool hasPermission = await hasSpecialLocationPermission(userId);
-    return hasPermission;
+    // Cobertura nacional completa habilitada en todo México
+    return true;
   }
 }

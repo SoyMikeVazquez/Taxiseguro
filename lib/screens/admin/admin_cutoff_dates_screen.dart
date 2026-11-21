@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'admin_cutoff_detail_screen.dart';
+import '../../services/admin_service.dart';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -33,6 +34,16 @@ class _AdminCutoffDatesScreenState extends State<AdminCutoffDatesScreen> {
           .select('*, cortes_conductores(*)')
           .order('fecha_corte', ascending: false);
 
+      // Consultar viajes completados para separar con precisión los cargos de pasarela Mercado Pago en cada fecha de corte
+      List<dynamic> completedTrips = [];
+      try {
+        final tripsRes = await _supabase
+            .from('trips')
+            .select('id, driver_id, fare, payment_method, status, created_at, completed_at')
+            .eq('status', 'completed');
+        completedTrips = (tripsRes as List<dynamic>?) ?? [];
+      } catch (_) {}
+
       final List<dynamic> rows = (res as List<dynamic>?) ?? [];
 
       if (rows.isNotEmpty) {
@@ -40,18 +51,77 @@ class _AdminCutoffDatesScreenState extends State<AdminCutoffDatesScreen> {
         for (var row in rows) {
           final dateStr = row['fecha_corte'] ?? row['created_at'];
           final date = DateTime.tryParse(dateStr.toString()) ?? DateTime.now();
+          final DateTime? pInicio = DateTime.tryParse(row['periodo_inicio']?.toString() ?? '');
+          final DateTime? pFin = DateTime.tryParse(row['periodo_fin']?.toString() ?? '');
 
           final List<dynamic> conductoresRaw = (row['cortes_conductores'] as List<dynamic>?) ?? [];
           final List<CutoffDriverItem> paid = [];
           final List<CutoffDriverItem> pending = [];
 
           for (var c in conductoresRaw) {
+            final String driverId = c['conductor_id']?.toString() ?? '';
+            double rawTotalRevenue = (c['total_generado'] as num?)?.toDouble() ?? 0.0;
+            double rawAmountDue = (c['saldo_a_pagar'] as num?)?.toDouble() ??
+                ((c['comision_app'] as num?)?.toDouble() ?? 0.0);
+            final int totalViajesRow = (c['total_viajes'] as num?)?.toInt() ?? 0;
+
+            double cashRev = (c['total_efectivo'] as num?)?.toDouble() ?? 0.0;
+            double cardGrossRev = 0.0;
+            double cardNetRev = (c['total_tarjeta'] as num?)?.toDouble() ?? 0.0;
+            double mpGatewayFee = 0.0;
+
+            // Si hay viajes reales en este periodo para este conductor, separar exactamente efectivo vs tarjeta y cargo de Mercado Pago
+            if (pInicio != null && pFin != null && totalViajesRow > 0) {
+              final startWindow = DateTime(pInicio.year, pInicio.month, pInicio.day, 0, 0, 0);
+              final endWindow = DateTime(pFin.year, pFin.month, pFin.day, 23, 59, 59);
+
+              final driverPeriodTrips = completedTrips.where((t) {
+                if (t['driver_id']?.toString() != driverId) return false;
+                final tDateStr = t['completed_at'] ?? t['created_at'];
+                final tDate = DateTime.tryParse(tDateStr?.toString() ?? '')?.toLocal();
+                if (tDate == null) return false;
+                return !tDate.isBefore(startWindow) && !tDate.isAfter(endWindow);
+              }).toList();
+
+              if (driverPeriodTrips.isNotEmpty) {
+                double calcCash = 0.0;
+                double calcCardGross = 0.0;
+                double calcCardNet = 0.0;
+                double calcMpFee = 0.0;
+
+                for (var dt in driverPeriodTrips) {
+                  final double fare = (dt['fare'] as num?)?.toDouble() ?? 0.0;
+                  final String method = (dt['payment_method'] ?? 'efectivo').toString();
+                  if (AdminService.esPagoConTarjeta(method)) {
+                    final double fee = AdminService.calcularCargoMercadoPago(fare, method);
+                    final double net = AdminService.calcularIngresoReal(fare, method);
+                    calcCardGross += fare;
+                    calcMpFee += fee;
+                    calcCardNet += net;
+                  } else {
+                    calcCash += fare;
+                  }
+                }
+
+                cashRev = calcCash;
+                cardGrossRev = calcCardGross;
+                cardNetRev = calcCardNet;
+                mpGatewayFee = calcMpFee;
+                rawTotalRevenue = double.parse((cashRev + cardNetRev).toStringAsFixed(2));
+                rawAmountDue = double.parse((rawTotalRevenue * 0.20).toStringAsFixed(2));
+              }
+            }
+
             final item = CutoffDriverItem(
-              id: c['conductor_id']?.toString() ?? '',
+              id: driverId,
               name: c['nombre_conductor']?.toString() ?? 'Conductor',
-              totalRevenue: (c['total_generado'] as num?)?.toDouble() ?? 0.0,
-              amountDue: (c['saldo_a_pagar'] as num?)?.toDouble() ??
-                  ((c['comision_app'] as num?)?.toDouble() ?? 0.0),
+              totalRevenue: rawTotalRevenue,
+              grossRevenueWithGateway: rawTotalRevenue + mpGatewayFee,
+              cashRevenue: cashRev,
+              cardGrossRevenue: cardGrossRev,
+              cardNetRevenue: cardNetRev,
+              mercadoPagoFee: mpGatewayFee,
+              amountDue: rawAmountDue,
               isPaid: (c['estatus_pago'] ?? '').toString().toLowerCase() == 'pagado',
             );
 
@@ -65,8 +135,8 @@ class _AdminCutoffDatesScreenState extends State<AdminCutoffDatesScreen> {
           loaded.add(CutoffDateModel(
             id: row['id']?.toString(),
             date: date,
-            startDate: DateTime.tryParse(row['periodo_inicio']?.toString() ?? ''),
-            endDate: DateTime.tryParse(row['periodo_fin']?.toString() ?? ''),
+            startDate: pInicio,
+            endDate: pFin,
             paidDrivers: paid,
             pendingDrivers: pending,
           ));
@@ -306,14 +376,24 @@ class _AdminCutoffDatesScreenState extends State<AdminCutoffDatesScreen> {
 class CutoffDriverItem {
   final String id;
   final String name;
-  final double totalRevenue;
-  final double amountDue;
+  final double totalRevenue; // Ingreso Real Neto (sin pasarela MP)
+  final double grossRevenueWithGateway; // Cobro Bruto con pasarela MP
+  final double cashRevenue;
+  final double cardGrossRevenue;
+  final double cardNetRevenue;
+  final double mercadoPagoFee; // Gasto pasarela Mercado Pago (No es ingreso)
+  final double amountDue; // 20% para Administradores sobre Ingreso Real
   final bool isPaid;
 
   CutoffDriverItem({
     required this.id,
     required this.name,
     required this.totalRevenue,
+    this.grossRevenueWithGateway = 0.0,
+    this.cashRevenue = 0.0,
+    this.cardGrossRevenue = 0.0,
+    this.cardNetRevenue = 0.0,
+    this.mercadoPagoFee = 0.0,
     required this.amountDue,
     required this.isPaid,
   });

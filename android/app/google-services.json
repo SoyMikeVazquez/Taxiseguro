@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "147172245373",
+    "project_id": "taxiseguro-b96da",
+    "storage_bucket": "taxiseguro-b96da.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:147172245373:android:15bf2485d48db239029614",
+        "android_client_info": {
+          "package_name": "com.pideloseguro.usuario"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBTot-k605Hahl9UkrKexHrUkAtwe30EF8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

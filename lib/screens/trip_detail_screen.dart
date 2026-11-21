@@ -259,7 +259,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final baseFare = totalFare * 0.80;
     final taxes = totalFare * 0.20;
     final pm = widget.trip.paymentMethod ?? 'efectivo';
-    final paymentMethodDisplay = pm.isNotEmpty ? '${pm[0].toUpperCase()}${pm.substring(1)}' : 'Efectivo';
+    final paymentMethodDisplay = pm.toLowerCase() == 'mercadopago'
+        ? 'Mercado Pago'
+        : (pm.isNotEmpty ? '${pm[0].toUpperCase()}${pm.substring(1)}' : 'Efectivo');
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
