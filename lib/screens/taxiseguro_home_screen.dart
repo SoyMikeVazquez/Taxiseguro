@@ -384,6 +384,13 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
           }
         });
       }
+    }, onError: (err) {
+      debugPrint('Aviso en stream de viaje de pasajero (reconectando en 5s): $err');
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted && _currentTripId == tripId) {
+          _listenToTrip(tripId);
+        }
+      });
     });
   }
 

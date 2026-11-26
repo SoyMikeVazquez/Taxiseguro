@@ -16,6 +16,11 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    - admin_service_recovered.dart
+    - create_pricing_zones.dart
+    - patch_driver_home.dart
+    - test_admins.dart
+    - test_font.dart
 include: package:flutter_lints/flutter.yaml
 
 linter:

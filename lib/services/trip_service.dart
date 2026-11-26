@@ -195,9 +195,9 @@ class TripService {
       }
     }
 
-    // Disparar notificaciones (OneSignal + WhatsApp) a conductores a menos de 5 km si no las despachó ya el trigger de Supabase
-    if (createdTrip != null && createdTrip.id != null && !notifiedByTrigger) {
-      _dispatchPushForNewTrip(createdTrip);
+    // Disparar notificaciones (OneSignal + WhatsApp + Correo) a conductores a menos de 5 km
+    if (createdTrip != null && createdTrip.id != null) {
+      _dispatchPushForNewTrip(createdTrip, alreadySentPushByTrigger: notifiedByTrigger);
     }
 
     return createdTrip;
@@ -213,11 +213,13 @@ class TripService {
     final Map<String, Map<String, dynamic>> nearbyDriversMap = {};
 
     // 1. Consulta directa a la tabla conductores calculando distancia exacta en metros
+    // Incluye conductores con isActivo=true, estatus=activo, o ubicación GPS reportada en los últimos 30 minutos
     try {
+      final recentThreshold = DateTime.now().toUtc().subtract(const Duration(minutes: 30)).toIso8601String();
       final res = await _client
           .from('conductores')
-          .select('id, user_id, nombre, nombre_completo, telefono, current_lat, current_lng, isActivo, estatus')
-          .or('isActivo.eq.true,estatus.eq.activo');
+          .select('id, user_id, nombre, nombre_completo, telefono, correo, current_lat, current_lng, isActivo, estatus, last_location_at')
+          .or('isActivo.eq.true,estatus.eq.activo,last_location_at.gte.$recentThreshold');
 
       final List<dynamic> list = (res as List<dynamic>?) ?? [];
       for (final d in list) {
@@ -230,10 +232,12 @@ class TripService {
           if (distInMeters <= (radiusKm * 1000)) {
             final driverName = (d['nombre_completo'] ?? d['nombre'] ?? 'Conductor').toString().trim();
             final driverPhone = (d['telefono'] ?? '').toString().trim();
+            final driverEmail = (d['correo'] ?? '').toString().trim();
             nearbyDriversMap[uid] = {
               'user_id': uid,
               'nombre': driverName.isNotEmpty ? driverName : 'Conductor',
               'telefono': driverPhone,
+              'correo': driverEmail,
               'distancia_km': distInMeters / 1000.0,
             };
           }
@@ -259,6 +263,7 @@ class TripService {
               'user_id': uid,
               'nombre': (item['nombre'] ?? 'Conductor').toString(),
               'telefono': (item['telefono'] ?? '').toString(),
+              'correo': (item['correo'] ?? '').toString(),
               'distancia_km': (item['distancia_km'] as num?)?.toDouble() ?? 0.0,
             };
           }
@@ -266,23 +271,51 @@ class TripService {
       }
     } catch (_) {}
 
-    // 3. Si algún conductor cercano no tenía teléfono en 'conductores', buscarlo en 'users'
-    final List<String> missingPhoneUids = nearbyDriversMap.entries
-        .where((e) => (e.value['telefono'] as String).isEmpty)
+    // 3. Si algún conductor cercano no tenía teléfono o correo en 'conductores', buscarlo en 'users' y 'conductores'
+    final List<String> missingContactUids = nearbyDriversMap.entries
+        .where((e) =>
+            (e.value['telefono'] as String? ?? '').isEmpty ||
+            (e.value['correo'] as String? ?? '').isEmpty)
         .map((e) => e.key)
         .toList();
 
-    if (missingPhoneUids.isNotEmpty) {
+    if (missingContactUids.isNotEmpty) {
+      try {
+        final condRes = await _client
+            .from('conductores')
+            .select('user_id, telefono, correo')
+            .inFilter('user_id', missingContactUids);
+        for (final c in (condRes as List<dynamic>)) {
+          final uid = c['user_id']?.toString();
+          final phone = (c['telefono'] ?? '').toString().trim();
+          final email = (c['correo'] ?? '').toString().trim();
+          if (uid != null && nearbyDriversMap.containsKey(uid)) {
+            if ((nearbyDriversMap[uid]!['telefono'] as String? ?? '').isEmpty && phone.isNotEmpty) {
+              nearbyDriversMap[uid]!['telefono'] = phone;
+            }
+            if ((nearbyDriversMap[uid]!['correo'] as String? ?? '').isEmpty && email.isNotEmpty) {
+              nearbyDriversMap[uid]!['correo'] = email;
+            }
+          }
+        }
+      } catch (_) {}
+
       try {
         final usersRes = await _client
             .from('users')
-            .select('user_id, telefono, nombre')
-            .inFilter('user_id', missingPhoneUids);
+            .select('user_id, telefono, correo, nombre')
+            .inFilter('user_id', missingContactUids);
         for (final u in (usersRes as List<dynamic>)) {
           final uid = u['user_id']?.toString();
           final phone = (u['telefono'] ?? '').toString().trim();
-          if (uid != null && nearbyDriversMap.containsKey(uid) && phone.isNotEmpty) {
-            nearbyDriversMap[uid]!['telefono'] = phone;
+          final email = (u['correo'] ?? '').toString().trim();
+          if (uid != null && nearbyDriversMap.containsKey(uid)) {
+            if ((nearbyDriversMap[uid]!['telefono'] as String? ?? '').isEmpty && phone.isNotEmpty) {
+              nearbyDriversMap[uid]!['telefono'] = phone;
+            }
+            if ((nearbyDriversMap[uid]!['correo'] as String? ?? '').isEmpty && email.isNotEmpty) {
+              nearbyDriversMap[uid]!['correo'] = email;
+            }
           }
         }
       } catch (_) {}
@@ -305,8 +338,8 @@ class TripService {
     return drivers.map((d) => d['user_id'].toString()).toList();
   }
 
-  /// Despacha notificaciones por OneSignal Push y por WhatsApp a todos los conductores activos dentro de 5 km
-  Future<void> _dispatchPushForNewTrip(Trip trip) async {
+  /// Despacha notificaciones por OneSignal Push, WhatsApp y Correo a todos los conductores activos dentro de 5 km
+  Future<void> _dispatchPushForNewTrip(Trip trip, {bool alreadySentPushByTrigger = false}) async {
     try {
       List<Map<String, dynamic>> nearbyDrivers = [];
       List<String>? targetDriverIds;
@@ -320,28 +353,61 @@ class TripService {
 
         if (nearbyDrivers.isNotEmpty) {
           targetDriverIds = nearbyDrivers.map((d) => d['user_id'].toString()).toList();
-          debugPrint('Notificando (OneSignal + WhatsApp) a ${nearbyDrivers.length} conductor(es) a menos de 5 km de ${trip.originAddress}');
+          debugPrint('Notificando (OneSignal + WhatsApp + Email) a ${nearbyDrivers.length} conductor(es) a menos de 5 km de ${trip.originAddress}');
         } else {
           debugPrint('No se detectaron conductores activos con ubicación dentro de 5 km.');
           targetDriverIds = null;
         }
       }
 
-      // 1. Notificación Push vía OneSignal
-      await OneSignalService().notifyNewTripForDrivers(
-        tripId: trip.id!,
-        originAddress: trip.originAddress,
-        fare: trip.fare,
-        targetDriverUserIds: targetDriverIds,
-      );
+      // Obtener datos del pasajero (nombre y correo) para las notificaciones por correo
+      String passengerName = 'Pasajero';
+      String passengerEmail = '';
+      if (trip.userId.isNotEmpty) {
+        try {
+          var uRes = await _client
+              .from('users')
+              .select('nombre, correo')
+              .eq('user_id', trip.userId)
+              .maybeSingle();
+          uRes ??= await _client
+              .from('users')
+              .select('nombre, correo')
+              .eq('id', trip.userId)
+              .maybeSingle();
+          if (uRes != null) {
+            final n = (uRes['nombre'] ?? '').toString().trim();
+            final e = (uRes['correo'] ?? '').toString().trim();
+            if (n.isNotEmpty) passengerName = n;
+            if (e.isNotEmpty) passengerEmail = e;
+          }
+        } catch (_) {}
+      }
+      if (passengerEmail.isEmpty) {
+        final currentAuth = _client.auth.currentUser;
+        if (currentAuth != null && currentAuth.id == trip.userId && currentAuth.email != null) {
+          passengerEmail = currentAuth.email!.trim();
+        }
+      }
 
-      // 2. Notificación vía WhatsApp a todos los conductores cercanos dentro de 5 km
+      // 1. Notificación Push vía OneSignal (si no fue enviada ya por el trigger de Supabase)
+      if (!alreadySentPushByTrigger) {
+        await OneSignalService().notifyNewTripForDrivers(
+          tripId: trip.id!,
+          originAddress: trip.originAddress,
+          fare: trip.fare,
+          targetDriverUserIds: targetDriverIds,
+        );
+      }
+
+      // 2. Notificación vía WhatsApp y Correo Electrónico a todos los conductores cercanos dentro de 5 km
       for (final driver in nearbyDrivers) {
         final String phone = (driver['telefono'] ?? '').toString().trim();
+        final String email = (driver['correo'] ?? '').toString().trim();
         final String name = (driver['nombre'] ?? 'Conductor').toString().trim();
         final double? distKm = (driver['distancia_km'] as num?)?.toDouble();
 
-        if (phone.isNotEmpty) {
+        if (!alreadySentPushByTrigger && phone.isNotEmpty) {
           WhatsAppService.sendNewTripAlertToDriverWhatsApp(
             driverPhone: phone,
             driverName: name,
@@ -352,6 +418,32 @@ class TripService {
             distanceFromDriverKm: distKm,
           );
         }
+
+        if (email.isNotEmpty && email.contains('@')) {
+          BrevoService.sendNewTripAlertToDriverEmail(
+            driverEmail: email,
+            driverName: name,
+            tripId: trip.id!,
+            origin: trip.originAddress,
+            destination: trip.destinationAddress,
+            passengerName: passengerName,
+            fare: trip.fare,
+            distanceFromDriverKm: distKm,
+          );
+        }
+      }
+
+      // 3. Notificación por Correo Electrónico al pasajero confirmando su solicitud y búsqueda cercana
+      if (passengerEmail.isNotEmpty && passengerEmail.contains('@')) {
+        BrevoService.sendNewTripConfirmationToPassengerEmail(
+          passengerEmail: passengerEmail,
+          passengerName: passengerName,
+          tripId: trip.id!,
+          origin: trip.originAddress,
+          destination: trip.destinationAddress,
+          fare: trip.fare,
+          nearbyDriversCount: nearbyDrivers.length,
+        );
       }
     } catch (e) {
       debugPrint('Error al despachar notificaciones para nuevo viaje: $e');

@@ -12,6 +12,7 @@ import '../services/background_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'active_trip_screen.dart';
 import '../services/driver_shift_service.dart';
+import '../services/onesignal_service.dart';
 import '../env/env.dart';
 
 class DriverMapScreen extends StatefulWidget {
@@ -37,10 +38,15 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
   
   StreamSubscription<LatLng>? _locationSubscription;
   StreamSubscription<List<Trip>>? _pendingTripsSubscription;
+  Timer? _pendingTripsRetryTimer;
+  Timer? _locationRetryTimer;
+  List<Trip> _pendingTrips = [];
+  bool _isLoadingPendingTrips = false;
   final Set<String> _notifiedTripIds = {};
   Timer? _disconnectionTimer;
   DateTime? _lastGpsSyncTime;
   LatLng? _lastGpsSyncLocation;
+  DateTime? _lastUiLocationUpdateTime;
 
   void _syncDriverGpsToSupabase(LatLng loc, {bool force = false}) {
     if (!_isDriverActive || _driverId == null || _driverId!.isEmpty) return;
@@ -82,9 +88,12 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _disconnectionTimer?.cancel();
+    _pendingTripsRetryTimer?.cancel();
+    _locationRetryTimer?.cancel();
     // No desconectar en dispose para permitir navegación interna y recepción en segundo plano
     _locationSubscription?.cancel();
     _pendingTripsSubscription?.cancel();
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -93,6 +102,11 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _driverId = Supabase.instance.client.auth.currentUser?.id;
+    if (_driverId != null && _driverId!.isNotEmpty) {
+      OneSignalService().login(_driverId!);
+      OneSignalService().setTag('role', 'conductor');
+    }
+    OneSignalService().requestPermission();
     BackgroundServiceHelper.requestNotificationPermission();
     _initializeLocationAndState();
   }
@@ -100,49 +114,21 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.detached) {
-      _checkAndDeactivateOnExit();
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      // IMPORTANTE: NO desactivar al conductor al salir al Home, bloquear la pantalla
+      // o cerrar la actividad en Android/iOS. El conductor debe permanecer en isActivo = true
+      // hasta que apague manualmente su interruptor o cierre sesión, para poder recibir
+      // notificaciones Push de OneSignal fuera de la app y con pantalla bloqueada.
       _disconnectionTimer?.cancel();
-      _disconnectionTimer = Timer(const Duration(minutes: 15), () {
-        _checkAndDeactivateOnExit();
-      });
+      if (_isDriverActive) {
+        _syncDriverGpsToSupabase(_currentLocation, force: true);
+      }
     } else if (state == AppLifecycleState.resumed) {
       _disconnectionTimer?.cancel();
       _disconnectionTimer = null;
       _loadDriverState();
-    }
-  }
-
-  /// Se desactiva cuando sale de la app y que no esté teniendo un viaje activo
-  Future<void> _checkAndDeactivateOnExit() async {
-    if (_driverId == null || !_isDriverActive) return;
-
-    try {
-      // 1. Verificar si el conductor está teniendo un viaje activo actualmente
-      final activeTrip = await _tripService.getActiveTrip(_driverId!);
-      if (activeTrip != null) {
-        debugPrint('DriverMapScreen: Conductor en viaje activo (${activeTrip.id}), NO se desactiva al salir.');
-        return;
-      }
-
-      // 2. Si no está en viaje, desactivar en Supabase y registrar fin de turno
-      debugPrint('DriverMapScreen: Desactivando conductor al salir de la app (sin viaje en curso)...');
-      _isDriverActive = false;
-      _stopListeningToPendingTrips();
-      BackgroundServiceHelper.stopService();
-
-      await Supabase.instance.client
-          .from('conductores')
-          .update({
-            'isActivo': false,
-            'estatus': 'inactivo',
-          })
-          .eq('user_id', _driverId!);
-
-      await DriverShiftService().recordDisconnection(_driverId!);
-    } catch (e) {
-      debugPrint('DriverMapScreen: Error al desactivar conductor al salir: $e');
     }
   }
 
@@ -168,69 +154,132 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
       _locationPermissionGranted = true;
     });
 
-    // Iniciar el seguimiento en tiempo real
-    _locationSubscription = _locationService.getLocationStream().listen((newLoc) {
-      if (mounted) {
-        setState(() {
-          _currentLocation = newLoc;
-        });
-        // El mapa seguirá la ubicación en tiempo real del conductor
-        try {
-          _mapController.move(newLoc, _mapController.camera.zoom);
-        } catch (_) {}
-        if (_isDriverActive) {
-          _syncDriverGpsToSupabase(newLoc);
-        }
-      }
-    });
+    // Iniciar el seguimiento en tiempo real con manejo de errores y reconexion
+    _startLocationStream();
 
     // 2. Cargar estado del conductor
     _loadDriverState(isInitialLoad: true);
   }
 
+  void _startLocationStream() {
+    _locationSubscription?.cancel();
+    _locationRetryTimer?.cancel();
+    _locationSubscription = _locationService.getLocationStream().listen(
+      (newLoc) {
+        if (!mounted) return;
+
+        final now = DateTime.now();
+        final shouldUpdateUi = _lastUiLocationUpdateTime == null ||
+            now.difference(_lastUiLocationUpdateTime!).inSeconds >= 2 ||
+            Geolocator.distanceBetween(
+                  _currentLocation.latitude,
+                  _currentLocation.longitude,
+                  newLoc.latitude,
+                  newLoc.longitude,
+                ) >=
+                8;
+
+        if (shouldUpdateUi) {
+          _lastUiLocationUpdateTime = now;
+          setState(() {
+            _currentLocation = newLoc;
+          });
+          try {
+            _mapController.move(newLoc, _mapController.camera.zoom);
+          } catch (_) {}
+        } else {
+          _currentLocation = newLoc;
+        }
+
+        if (_isDriverActive) {
+          _syncDriverGpsToSupabase(newLoc);
+        }
+      },
+      onError: (err) {
+        debugPrint('Aviso en stream GPS de conductor (reconectando en 5s): $err');
+        _locationRetryTimer?.cancel();
+        _locationRetryTimer = Timer(const Duration(seconds: 5), () {
+          if (mounted) _startLocationStream();
+        });
+      },
+    );
+  }
+
   void _startListeningToPendingTrips() {
     _pendingTripsSubscription?.cancel();
-    _pendingTripsSubscription = _tripService.streamPendingTrips().listen((allTrips) {
-      if (!mounted || !_isDriverActive) return;
+    _pendingTripsRetryTimer?.cancel();
+    if (_pendingTrips.isEmpty) {
+      _isLoadingPendingTrips = true;
+    }
 
-      for (final trip in allTrips) {
-        if (trip.id == null || _notifiedTripIds.contains(trip.id)) continue;
+    _pendingTripsSubscription = _tripService.streamPendingTrips().listen(
+      (allTrips) {
+        if (!mounted) return;
 
-        // Validar antigüedad (últimos 30 minutos)
-        if (trip.createdAt != null) {
-          final diff = DateTime.now().difference(trip.createdAt!).inMinutes;
-          if (diff > 30) continue;
+        if (_isDriverActive) {
+          if (_notifiedTripIds.length > 250) {
+            _notifiedTripIds.clear();
+          }
+
+          for (final trip in allTrips) {
+            if (trip.id == null || _notifiedTripIds.contains(trip.id)) continue;
+
+            // Validar antigüedad (últimos 30 minutos)
+            if (trip.createdAt != null) {
+              final diff = DateTime.now().difference(trip.createdAt!).inMinutes;
+              if (diff > 30) continue;
+            }
+
+            // Validar radio de cobertura (5 km)
+            if (trip.originLat != null && trip.originLng != null) {
+              final distanceInMeters = Geolocator.distanceBetween(
+                _currentLocation.latitude,
+                _currentLocation.longitude,
+                trip.originLat!,
+                trip.originLng!,
+              );
+              if (distanceInMeters > 5000) continue;
+            }
+
+            // Marcar como notificado
+            _notifiedTripIds.add(trip.id!);
+
+            // Emitir notificación con sonido y banner de alta prioridad
+            final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)} MXN' : '';
+            final originStr = trip.originAddress.isNotEmpty ? trip.originAddress : 'Cerca de tu ubicacion';
+            BackgroundServiceHelper.showAlertNotification(
+              'Nuevo Viaje Solicitado',
+              fareStr.isNotEmpty ? '$fareStr • $originStr. Toca para ver y aceptar.' : '$originStr. Toca para ver y aceptar.',
+            );
+          }
         }
 
-        // Validar radio de cobertura (5 km)
-        if (trip.originLat != null && trip.originLng != null) {
-          final distanceInMeters = Geolocator.distanceBetween(
-            _currentLocation.latitude,
-            _currentLocation.longitude,
-            trip.originLat!,
-            trip.originLng!,
-          );
-          // Cambiado a 5,000 metros (5km) para evitar alertas lejanas
-          if (distanceInMeters > 5000) continue;
+        setState(() {
+          _pendingTrips = allTrips;
+          _isLoadingPendingTrips = false;
+        });
+      },
+      onError: (err) {
+        debugPrint('Aviso en stream de viajes pendientes (reconectando en 5s): $err');
+        if (mounted) {
+          setState(() => _isLoadingPendingTrips = false);
         }
-
-        // Marcar como notificado
-        _notifiedTripIds.add(trip.id!);
-
-        // Emitir notificación con sonido y banner de alta prioridad
-        final fareStr = trip.fare != null ? '\$${trip.fare!.toStringAsFixed(2)}' : '';
-        final originStr = trip.originAddress.isNotEmpty ? trip.originAddress : 'Cerca de tu ubicación';
-        BackgroundServiceHelper.showAlertNotification(
-          '🚖 ¡Nuevo Viaje Solicitado!',
-          fareStr.isNotEmpty ? '$fareStr • $originStr. Toca para ver y aceptar.' : '$originStr. Toca para ver y aceptar.',
-        );
-      }
-    });
+        _pendingTripsRetryTimer?.cancel();
+        _pendingTripsRetryTimer = Timer(const Duration(seconds: 5), () {
+          if (mounted && _isDriverActive) {
+            _startListeningToPendingTrips();
+          }
+        });
+      },
+    );
   }
 
   void _stopListeningToPendingTrips() {
+    _pendingTripsRetryTimer?.cancel();
     _pendingTripsSubscription?.cancel();
     _pendingTripsSubscription = null;
+    _pendingTrips = [];
+    _isLoadingPendingTrips = false;
   }
 
   Future<void> _loadDriverState({bool isInitialLoad = false}) async {
@@ -251,6 +300,11 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
             final bool isActivo = userResp['isActivo'] == true;
             _isDriverActive = isActivo;
             if (_isDriverActive) {
+              if (_driverId != null && _driverId!.isNotEmpty) {
+                OneSignalService().login(_driverId!);
+                OneSignalService().setTag('role', 'conductor');
+              }
+              BackgroundServiceHelper.startService();
               _startListeningToPendingTrips();
               _syncDriverGpsToSupabase(_currentLocation, force: true);
             } else {
@@ -700,8 +754,10 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
               heroTag: 'reload_stream',
               backgroundColor: Colors.white,
               onPressed: () {
-                // Trigger a rebuild of the stream builder
-                setState(() {});
+                if (_isDriverActive) {
+                  _startListeningToPendingTrips();
+                }
+                _loadDriverState();
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Buscando viajes recientes...'), duration: Duration(seconds: 1)),
                 );
@@ -812,147 +868,141 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
   }
 
   Widget _buildPendingTripsList() {
-    return StreamBuilder<List<Trip>>(
-      stream: _tripService.streamPendingTrips(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Container(
-            height: 180,
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF141414),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
-            ),
-            child: const Center(child: CircularProgressIndicator(color: Color(0xFFFFD600))),
-          );
-        }
+    if (_isLoadingPendingTrips && _pendingTrips.isEmpty) {
+      return Container(
+        height: 180,
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141414),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
+        ),
+        child: const Center(child: CircularProgressIndicator(color: Color(0xFFFFD600))),
+      );
+    }
 
-        final allTrips = snapshot.data ?? [];
-        
-        // Filtrar por radio de 5km (5000 metros)
-        final trips = allTrips.where((trip) {
-          if (trip.createdAt != null) {
-            try {
-              final createdTime = trip.createdAt!;
-              if (DateTime.now().difference(createdTime).inMinutes > 35) {
-                return false; // Ignorar viajes con más de 35 minutos de antigüedad
-              }
-            } catch (e) {
-              print('Error parseando fecha: $e');
-            }
+    // Filtrar viajes vigentes usando la lista única en memoria (_pendingTrips)
+    // sin recrear nuevos canales Realtime en cada actualización de GPS.
+    final trips = _pendingTrips.where((trip) {
+      if (trip.createdAt != null) {
+        try {
+          final createdTime = trip.createdAt!;
+          if (DateTime.now().difference(createdTime).inMinutes > 35) {
+            return false; // Ignorar viajes con más de 35 minutos de antigüedad
           }
+        } catch (e) {
+          debugPrint('Error parseando fecha: $e');
+        }
+      }
 
-          if (trip.originLat == null || trip.originLng == null) return true; // Mostrar si no hay coordenadas por seguridad
-          final distanceInMeters = Geolocator.distanceBetween(
-            _currentLocation.latitude,
-            _currentLocation.longitude,
-            trip.originLat!,
-            trip.originLng!,
-          );
-          return distanceInMeters <= 5000000; // Temporal: 5000 km para pruebas en simulador
-        }).toList();
+      if (trip.originLat == null || trip.originLng == null) return true;
+      final distanceInMeters = Geolocator.distanceBetween(
+        _currentLocation.latitude,
+        _currentLocation.longitude,
+        trip.originLat!,
+        trip.originLng!,
+      );
+      return distanceInMeters <= 5000000;
+    }).toList();
 
-        if (trips.isEmpty) {
+    if (trips.isEmpty) {
+      return Container(
+        height: 180,
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141414),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
+          boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10))],
+        ),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.radar, size: 48, color: Color(0xFFFFD600)),
+              SizedBox(height: 12),
+              Text('Buscando viajes cercanos...', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 200,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: trips.length,
+        itemBuilder: (context, index) {
+          final trip = trips[index];
           return Container(
-            height: 180,
-            margin: const EdgeInsets.symmetric(horizontal: 16),
+            width: MediaQuery.of(context).size.width * 0.85,
+            margin: const EdgeInsets.only(right: 16, bottom: 8),
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: const Color(0xFF141414),
               borderRadius: BorderRadius.circular(24),
               border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
-              boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10))],
+              boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 18, offset: Offset(0, 8))],
             ),
-            child: const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.radar, size: 48, color: Color(0xFFFFD600)),
-                  SizedBox(height: 12),
-                  Text('Buscando viajes cercanos...', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-          );
-        }
-
-        return SizedBox(
-          height: 200,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: trips.length,
-            itemBuilder: (context, index) {
-              final trip = trips[index];
-              return Container(
-                width: MediaQuery.of(context).size.width * 0.85,
-                margin: const EdgeInsets.only(right: 16, bottom: 8),
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141414),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.2),
-                  boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 18, offset: Offset(0, 8))],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF262626),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFFFFD600).withOpacity(0.4), width: 1),
-                          ),
-                          child: const Text('Nuevo Viaje', style: TextStyle(color: Color(0xFFFFD600), fontSize: 12, fontWeight: FontWeight.bold)),
-                        ),
-                        if (trip.fare != null)
-                          Text('\$${trip.fare!.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))
-                        else
-                          const Text('Por cotizar', style: TextStyle(color: Colors.white70, fontSize: 14)),
-                      ],
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF262626),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFFD600).withOpacity(0.4), width: 1),
+                      ),
+                      child: const Text('Nuevo Viaje', style: TextStyle(color: Color(0xFFFFD600), fontSize: 12, fontWeight: FontWeight.bold)),
                     ),
-                    const Spacer(),
-                    Row(
-                      children: [
-                        const Icon(Icons.location_on, size: 20, color: Color(0xFFFFD600)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            trip.destinationAddress,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 56,
-                      child: ElevatedButton(
-                        onPressed: () => _acceptTrip(trip),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFFFD600), // Taxi Yellow
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                          elevation: 0,
-                        ),
-                        child: const Text('Aceptar Viaje', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+                    if (trip.fare != null)
+                      Text('\$${trip.fare!.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold))
+                    else
+                      const Text('Por cotizar', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                  ],
+                ),
+                const Spacer(),
+                Row(
+                  children: [
+                    const Icon(Icons.location_on, size: 20, color: Color(0xFFFFD600)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        trip.destinationAddress,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
-              );
-            },
-          ),
-        );
-      },
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton(
+                    onPressed: () => _acceptTrip(trip),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFFD600), // Taxi Yellow
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      elevation: 0,
+                    ),
+                    child: const Text('Aceptar Viaje', style: TextStyle(fontFamily: 'Google Sans', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }

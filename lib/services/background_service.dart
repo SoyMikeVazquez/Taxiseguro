@@ -19,22 +19,36 @@ Future<void> initializeBackgroundService() async {
     enableVibration: true,
   );
 
+  const AndroidNotificationChannel tripAlertsChannel = AndroidNotificationChannel(
+    'taxiseguro_new_trip_alerts',
+    'Nuevos Viajes Disponibles',
+    description: 'Alertas prioritarias con sonido para nuevos viajes cercanos con pantalla bloqueada.',
+    importance: Importance.max,
+    playSound: true,
+    enableVibration: true,
+  );
+
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
   if (Platform.isIOS || Platform.isAndroid) {
     await flutterLocalNotificationsPlugin.initialize(
       settings: const InitializationSettings(
-        iOS: DarwinInitializationSettings(),
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: true,
+          requestBadgePermission: true,
+          requestSoundPermission: true,
+        ),
         android: AndroidInitializationSettings('@mipmap/launcher_icon'),
       ),
     );
   }
 
-  await flutterLocalNotificationsPlugin
+  final androidPlugin = flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(channel);
+          AndroidFlutterLocalNotificationsPlugin>();
+  await androidPlugin?.createNotificationChannel(channel);
+  await androidPlugin?.createNotificationChannel(tripAlertsChannel);
 
   await service.configure(
     androidConfiguration: AndroidConfiguration(
@@ -518,20 +532,26 @@ class BackgroundServiceHelper {
       body: body,
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
-          'taxiseguro_foreground',
-          'Alertas de Viaje TaxiSeguro',
+          'taxiseguro_new_trip_alerts',
+          'Nuevos Viajes Disponibles',
+          channelDescription: 'Alertas prioritarias con sonido para nuevos viajes cercanos con pantalla bloqueada.',
           icon: '@mipmap/launcher_icon',
           importance: Importance.max,
           priority: Priority.max,
           fullScreenIntent: true,
+          visibility: NotificationVisibility.public,
+          category: AndroidNotificationCategory.call,
           showWhen: true,
           playSound: true,
           enableVibration: true,
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
+          presentBanner: true,
+          presentList: true,
           presentBadge: true,
           presentSound: true,
+          interruptionLevel: InterruptionLevel.timeSensitive,
         ),
       ),
     );

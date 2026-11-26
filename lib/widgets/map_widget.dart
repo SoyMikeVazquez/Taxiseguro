@@ -103,13 +103,18 @@ class _MapWidgetState extends State<MapWidget> {
       _initSimulatedCars();
     }
 
-    _locationSubscription = _locationService.getLocationStream().listen((pos) {
-      if (mounted) {
-        setState(() {
-          _currentPosition = pos;
-        });
-      }
-    });
+    _locationSubscription = _locationService.getLocationStream().listen(
+      (pos) {
+        if (mounted) {
+          setState(() {
+            _currentPosition = pos;
+          });
+        }
+      },
+      onError: (err) {
+        debugPrint('Aviso en stream GPS de mapa: $err');
+      },
+    );
   }
 
   void _initSimulatedCars() {

@@ -1,18 +1,34 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../env/env.dart';
+import 'brevo_service.dart';
 
 class ResendService {
   static const String _baseUrl = 'https://api.resend.com/emails';
   
-  /// Enviar un correo electrónico usando la API de Resend.
+  /// Enviar un correo electrónico usando Brevo (SMTP activo) con respaldo en Resend.
   /// Retorna true si fue exitoso, false si hubo un error.
   static Future<bool> sendEmail({
     required String to,
     required String subject,
     required String htmlContent,
-    String from = 'Taxiseguro <admin@taxiseguro.net>', // Asegúrate de usar un dominio verificado en Resend
+    String from = 'Taxiseguro <admin@taxiseguro.net>',
   }) async {
+    final cleanTo = to.trim();
+    if (cleanTo.isEmpty || !cleanTo.contains('@')) return false;
+
+    // 1. Intentar primero con BrevoService (cuenta oficial admin@taxiseguro.net activa)
+    try {
+      final brevoOk = await BrevoService.sendSingleEmail(
+        toEmail: cleanTo,
+        toName: cleanTo.split('@').first,
+        subject: subject,
+        htmlContent: htmlContent,
+      );
+      if (brevoOk) return true;
+    } catch (_) {}
+
+    // 2. Respaldo con Resend API
     try {
       final response = await http.post(
         Uri.parse(_baseUrl),
@@ -22,7 +38,7 @@ class ResendService {
         },
         body: jsonEncode({
           'from': from,
-          'to': [to],
+          'to': [cleanTo],
           'subject': subject,
           'html': htmlContent,
         }),

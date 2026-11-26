@@ -510,5 +510,104 @@ class BrevoService {
       print('Error enviando alerta de cancelación a super admins: $e');
     }
   }
+
+  // ===========================================================================
+  // NOTIFICACIONES DE NUEVO VIAJE CERCANO (CONDUCTORES Y PASAJERO)
+  // ===========================================================================
+
+  /// Envia correo de alerta a cada conductor activo dentro del radio de 5 km
+  static Future<bool> sendNewTripAlertToDriverEmail({
+    required String driverEmail,
+    required String driverName,
+    required String tripId,
+    required String origin,
+    required String destination,
+    String? passengerName,
+    double? fare,
+    double? distanceFromDriverKm,
+  }) async {
+    final cleanEmail = driverEmail.trim();
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) return false;
+
+    final shortId = tripId.length > 8 ? tripId.substring(0, 8) : tripId;
+    final distText = distanceFromDriverKm != null
+        ? 'a ${distanceFromDriverKm.toStringAsFixed(1)} km de tu ubicacion'
+        : 'cerca de tu ubicacion';
+    final fareText = fare != null ? '\$${fare.toStringAsFixed(2)} MXN' : 'Por calcular';
+    final pName = (passengerName != null && passengerName.trim().isNotEmpty)
+        ? passengerName.trim()
+        : 'Pasajero TaxiSeguro';
+
+    final subject = 'Nuevo Viaje Cercano ($distText) - Folio #$shortId';
+    final message = '''
+Tienes una nueva solicitud de viaje disponible <strong>$distText</strong>.<br><br>
+<div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-left: 5px solid #C7FF2E; border-radius: 12px; padding: 16px; margin: 12px 0;">
+  <p style="margin: 6px 0; font-size: 15px; color: #111827;"><strong>Pasajero:</strong> $pName</p>
+  <p style="margin: 6px 0; font-size: 15px; color: #111827;"><strong>Punto de recogida:</strong> $origin</p>
+  <p style="margin: 6px 0; font-size: 15px; color: #111827;"><strong>Destino:</strong> $destination</p>
+  <p style="margin: 6px 0; font-size: 16px; color: #111827;"><strong>Tarifa estimada:</strong> <span style="background-color: #121212; color: #C7FF2E; padding: 2px 8px; border-radius: 6px; font-weight: bold;">$fareText</span></p>
+  <p style="margin: 6px 0; font-size: 13px; color: #6B7280;"><strong>Folio:</strong> #$shortId</p>
+</div>
+Abre la aplicacion de <strong>TaxiSeguro</strong> ahora mismo para ver el viaje en tu mapa y aceptarlo.
+''';
+
+    final html = buildHtmlTemplate(
+      title: 'Nuevo Viaje Cercano Solicitado',
+      recipientName: driverName,
+      message: message,
+    );
+
+    return await sendSingleEmail(
+      toEmail: cleanEmail,
+      toName: driverName,
+      subject: subject,
+      htmlContent: html,
+    );
+  }
+
+  /// Envia correo de confirmacion al pasajero cuando solicita un viaje y se alerta a conductores cercanos
+  static Future<bool> sendNewTripConfirmationToPassengerEmail({
+    required String passengerEmail,
+    required String passengerName,
+    required String tripId,
+    required String origin,
+    required String destination,
+    double? fare,
+    int nearbyDriversCount = 0,
+  }) async {
+    final cleanEmail = passengerEmail.trim();
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) return false;
+
+    final shortId = tripId.length > 8 ? tripId.substring(0, 8) : tripId;
+    final fareText = fare != null ? '\$${fare.toStringAsFixed(2)} MXN' : 'Por calcular';
+    final driversNote = nearbyDriversCount > 0
+        ? 'Hemos notificado a <strong>$nearbyDriversCount conductor(es) cercano(s)</strong> en un radio de 5 km de tu punto de partida.'
+        : 'Estamos notificando a las unidades activas cercanas a tu punto de partida.';
+
+    final subject = 'Solicitud de Viaje Recibida - Buscando Conductor (#$shortId)';
+    final message = '''
+Tu solicitud de viaje ha sido registrada con exito. $driversNote<br><br>
+<div style="background-color: #F9FAFB; border: 1px solid #E5E7EB; border-left: 5px solid #121212; border-radius: 12px; padding: 16px; margin: 12px 0;">
+  <p style="margin: 6px 0; font-size: 15px; color: #111827;"><strong>Punto de recogida:</strong> $origin</p>
+  <p style="margin: 6px 0; font-size: 15px; color: #111827;"><strong>Destino:</strong> $destination</p>
+  <p style="margin: 6px 0; font-size: 16px; color: #111827;"><strong>Tarifa estimada:</strong> <strong>$fareText</strong></p>
+  <p style="margin: 6px 0; font-size: 13px; color: #6B7280;"><strong>Folio de viaje:</strong> #$shortId</p>
+</div>
+En cuanto un conductor acepte tu solicitud, recibiras una notificacion con su nombre, vehiculo y tu codigo PIN de seguridad.
+''';
+
+    final html = buildHtmlTemplate(
+      title: 'Buscando tu Conductor Cercano',
+      recipientName: passengerName,
+      message: message,
+    );
+
+    return await sendSingleEmail(
+      toEmail: cleanEmail,
+      toName: passengerName,
+      subject: subject,
+      htmlContent: html,
+    );
+  }
 }
 

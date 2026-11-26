@@ -54,7 +54,11 @@ BEGIN
             ))
         )) AS distancia_km
     FROM public.conductores c
-    WHERE (COALESCE(c."isActivo", false) = true OR COALESCE(c.estatus, '') = 'activo')
+    WHERE (
+          COALESCE(c."isActivo", false) = true
+          OR COALESCE(c.estatus, '') = 'activo'
+          OR (c.last_location_at IS NOT NULL AND c.last_location_at >= NOW() - INTERVAL '30 minutes')
+      )
       AND c.current_lat IS NOT NULL
       AND c.current_lng IS NOT NULL
       AND (c.last_location_at IS NULL OR c.last_location_at >= NOW() - INTERVAL '24 hours')
@@ -113,8 +117,8 @@ BEGIN
                     v_phone := '521' || SUBSTRING(v_phone FROM 3);
                 END IF;
 
-                -- Enviar notificación por WhatsApp a este conductor cercano
-                IF LENGTH(v_phone) >= 12 THEN
+                -- Enviar notificación por WhatsApp a este conductor cercano (solo si el token real está configurado en SQL)
+                IF LENGTH(v_phone) >= 12 AND v_wa_token IS NOT NULL AND v_wa_token <> '' AND v_wa_token NOT LIKE 'TU_%' THEN
                     v_clean_name := REGEXP_REPLACE(COALESCE(r_driver.nombre, 'Conductor'), '[\r\n\t]+', ' ', 'g');
                     v_wa_content := REGEXP_REPLACE(
                         'NUEVO VIAJE SOLICITADO A ' || ROUND(r_driver.distancia_km::numeric, 1)::TEXT || ' KM DE TI. ' ||
@@ -155,7 +159,9 @@ BEGIN
             END LOOP;
 
             -- Enviar notificación Push por OneSignal a los conductores cercanos dentro de 5 km
-            IF jsonb_array_length(v_driver_ids) > 0 THEN
+            -- IMPORTANTE: Si v_os_api_key tiene el marcador 'TU_ONESIGNAL_REST_API_KEY', NO marcar notified_drivers = true
+            -- para que la app Flutter despache la notificación Push y WhatsApp usando las llaves reales de Env.dart.
+            IF jsonb_array_length(v_driver_ids) > 0 AND v_os_api_key IS NOT NULL AND v_os_api_key <> '' AND v_os_api_key NOT LIKE 'TU_%' THEN
                 PERFORM net.http_post(
                     url := 'https://onesignal.com/api/v1/notifications',
                     headers := jsonb_build_object(
@@ -170,18 +176,21 @@ BEGIN
                             'en', v_fare_str || ' • ' || v_origin_str || '. Toca para ver y aceptar.'
                         ),
                         'priority', 10,
+                        'android_visibility', 1,
                         'ios_sound', 'default',
+                        'ttl', 300,
                         'data', jsonb_build_object('type', 'new_trip', 'trip_id', NEW.id),
                         'include_aliases', jsonb_build_object('external_id', v_driver_ids),
                         'include_external_user_ids', v_driver_ids,
                         'target_channel', 'push'
                     )
                 );
+                NEW.notified_drivers := true;
+            ELSE
+                NEW.notified_drivers := false;
             END IF;
-
-            NEW.notified_drivers := true;
         EXCEPTION WHEN OTHERS THEN
-            -- Si pg_net no está activo o ocurre un error de red, permitir que el viaje se cree sin fallar
+            -- Si pg_net no está activo o ocurre un error de red, permitir que la app Flutter envíe las notificaciones
             NEW.notified_drivers := false;
         END;
     END IF;

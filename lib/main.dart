@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'env/env.dart';
@@ -12,6 +13,22 @@ import 'package:intl/date_symbol_data_local.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Escudo global contra cierres inesperados por errores transitorios de red,
+  // WebSockets de Supabase Realtime o descarga de tiles de mapa en sesiones largas.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    debugPrint('FlutterError capturado: ${details.exceptionAsString()}');
+  };
+
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    debugPrint('Error asincrono global interceptado (evitando cierre): $error');
+    return true; // Evita que la app se cierre por excepciones de red o streams
+  };
+
+  // Limitar el uso de RAM del cache de imagenes (tiles @2x de Mapbox) para evitar
+  // cierres por falta de memoria (OOM) tras varias horas de trabajo en gama media/baja.
+  PaintingBinding.instance.imageCache.maximumSize = 150;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 30 << 20; // 30 MB max
   
   if (Platform.isAndroid || Platform.isIOS) {
     try {
@@ -61,7 +78,13 @@ class TaxiSeguroApp extends StatelessWidget {
       themeMode: ThemeMode.light,
       builder: (context, child) => OneSignalObserverWrapper(child: child ?? const SizedBox.shrink()),
       home: StreamBuilder<AuthState>(
-        stream: Supabase.instance.client.auth.onAuthStateChange,
+        stream: Supabase.instance.client.auth.onAuthStateChange.distinct((prev, next) {
+          // Evitar reconstruir la raiz de la app cada ~55 min cuando solo se refresca el JWT token
+          if (next.event == AuthChangeEvent.tokenRefreshed) return true;
+          final prevUid = prev.session?.user.id;
+          final nextUid = next.session?.user.id;
+          return prevUid == nextUid && next.event != AuthChangeEvent.passwordRecovery;
+        }),
         initialData: AuthState(AuthChangeEvent.initialSession, Supabase.instance.client.auth.currentSession),
         builder: (context, snapshot) {
           if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {

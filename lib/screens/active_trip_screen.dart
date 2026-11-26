@@ -31,6 +31,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   LatLng? _driverLocation;
   final MapController _mapController = MapController();
   StreamSubscription<Trip?>? _tripSubscription;
+  Timer? _tripRetryTimer;
   Timer? _waitTimer;
   int _remainingSeconds = 7 * 60;
 
@@ -132,23 +133,37 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
   void _listenToTripUpdates() {
     if (_currentTrip.id == null || _currentTrip.id == 'simulated_trip_123') return;
-    
-    _tripSubscription = _tripService.streamTrip(_currentTrip.id!).listen((trip) {
-      if (trip != null && mounted) {
-        if (trip.status == 'cancelled' && _currentTrip.status != 'cancelled') {
-          // El pasajero cancelo el viaje
-          BackgroundServiceHelper.notifyTripCancelled(
-            reason: 'El pasajero ha cancelado el viaje.',
-          );
-          _showTripCancelledDialog();
-        } else {
-          setState(() {
-            _currentTrip = trip;
-          });
-          _startWaitTimerIfNeeded();
+
+    _tripSubscription?.cancel();
+    _tripRetryTimer?.cancel();
+    _tripSubscription = _tripService.streamTrip(_currentTrip.id!).listen(
+      (trip) {
+        if (trip != null && mounted) {
+          if (trip.status == 'cancelled' && _currentTrip.status != 'cancelled') {
+            // El pasajero cancelo el viaje
+            BackgroundServiceHelper.notifyTripCancelled(
+              reason: 'El pasajero ha cancelado el viaje.',
+            );
+            _showTripCancelledDialog();
+          } else {
+            final prevStatus = _currentTrip.status;
+            setState(() {
+              _currentTrip = trip;
+            });
+            if (prevStatus != trip.status) {
+              _startWaitTimerIfNeeded();
+            }
+          }
         }
-      }
-    });
+      },
+      onError: (err) {
+        debugPrint('Aviso en stream de viaje activo (reconectando en 5s): $err');
+        _tripRetryTimer?.cancel();
+        _tripRetryTimer = Timer(const Duration(seconds: 5), () {
+          if (mounted) _listenToTripUpdates();
+        });
+      },
+    );
   }
 
   void _showTripCancelledDialog() {
@@ -174,7 +189,9 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
   @override
   void dispose() {
     _waitTimer?.cancel();
+    _tripRetryTimer?.cancel();
     _tripSubscription?.cancel();
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -210,7 +227,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
 
     final url = Uri.parse('https://router.project-osrm.org/route/v1/driving/$lng1,$lat1;$lng2,$lat2?geometries=geojson');
     try {
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final routes = data['routes'] as List;

@@ -27,20 +27,28 @@ class OneSignalService {
     _isInitialized = true;
     debugPrint('OneSignal inicializado con App ID: $targetAppId');
 
-    // Manejar clics en notificaciones
-    OneSignal.Notifications.addClickListener((event) {
-      debugPrint('OneSignal: Notificación clickeada: ${event.notification.title}');
+    // Solicitar permiso de notificaciones push y activar suscripcion para segundo plano / pantalla de bloqueo
+    OneSignal.Notifications.requestPermission(true).then((accepted) {
+      debugPrint('OneSignal permiso de notificaciones: $accepted');
+      OneSignal.User.pushSubscription.optIn();
     });
 
-    // Permitir que la notificación se muestre visualmente en pantalla incluso con la app abierta
+    // Manejar clics en notificaciones
+    OneSignal.Notifications.addClickListener((event) {
+      debugPrint('OneSignal: Notificacion clickeada: ${event.notification.title}');
+    });
+
+    // Permitir que la notificacion se muestre visualmente en pantalla incluso con la app abierta
     OneSignal.Notifications.addForegroundWillDisplayListener((event) {
-      debugPrint('OneSignal: Notificación recibida en primer plano: ${event.notification.title}');
+      debugPrint('OneSignal: Notificacion recibida en primer plano: ${event.notification.title}');
       event.notification.display();
     });
   }
 
   void login(String externalId) {
+    if (externalId.isEmpty) return;
     OneSignal.login(externalId);
+    OneSignal.User.pushSubscription.optIn();
     debugPrint('OneSignal login para usuario: $externalId');
   }
 
@@ -62,7 +70,9 @@ class OneSignalService {
   }
 
   Future<bool> requestPermission() async {
-    return await OneSignal.Notifications.requestPermission(true);
+    final granted = await OneSignal.Notifications.requestPermission(true);
+    OneSignal.User.pushSubscription.optIn();
+    return granted;
   }
 
   void setLogLevel(OSLogLevel level) {
@@ -109,7 +119,9 @@ class OneSignalService {
         'headings': {'es': title, 'en': title},
         'contents': {'es': body, 'en': body},
         'priority': 10,
+        'android_visibility': 1,
         'ios_sound': 'default',
+        'ttl': 300,
       };
 
       if (additionalData != null && additionalData.isNotEmpty) {
@@ -183,8 +195,9 @@ class OneSignalService {
       },
     );
 
-    // Si los IDs especificos de 5 km aun no tenian suscripcion OneSignal vinculada, enviar por etiqueta role=conductor como respaldo
-    if (hasSpecificDrivers && res['success'] != true) {
+    // Si los IDs especificos de 5 km aun no tenian suscripcion OneSignal activa (recipients == 0), enviar por etiqueta role=conductor como respaldo
+    final int recipients = (res['recipients'] as int?) ?? 0;
+    if (hasSpecificDrivers && (res['success'] != true || recipients == 0)) {
       await sendPushNotification(
         title: 'Nuevo Viaje Solicitado',
         body: '$fareText$originAddress. Toca para ver y aceptar.',
@@ -218,46 +231,8 @@ class OneSignalService {
   }
 }
 
-// --- Push Subscription Verification Dialog (OneSignal Official) ---
-
-bool _dialogShown = false;
-
-bool _isRegistered(String? id) =>
-    id != null && id.isNotEmpty && !id.startsWith('local-');
-
-void _maybeShowIntegrationCompleteDialog(BuildContext context, String? subscriptionId) {
-  if (_isRegistered(subscriptionId) && !_dialogShown) {
-    _dialogShown = true;
-    showIntegrationCompleteDialog(context);
-  }
-}
-
 void setupPushSubscriptionObserver(BuildContext context) {
   OneSignal.User.pushSubscription.addObserver((state) {
-    _maybeShowIntegrationCompleteDialog(context, state.current.id);
+    debugPrint('OneSignal pushSubscription id: ${state.current.id}, optedIn: ${state.current.optedIn}');
   });
-
-  _maybeShowIntegrationCompleteDialog(context, OneSignal.User.pushSubscription.id);
-}
-
-void showIntegrationCompleteDialog(BuildContext context) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => AlertDialog(
-      title: const Text('Your OneSignal SDK integration is complete!'),
-      content: const Text(
-        'You can now send Push Notifications & In-App Messages through OneSignal. Tap below to enable push notifications.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            Navigator.pop(context);
-            OneSignal.Notifications.requestPermission(true);
-          },
-          child: const Text('Got it'),
-        ),
-      ],
-    ),
-  );
 }
