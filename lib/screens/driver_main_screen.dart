@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_screen.dart';
 import '../services/trip_service.dart';
 import '../services/driver_shift_service.dart';
+import '../services/onesignal_service.dart';
 import 'package:liquid_glass_easy/liquid_glass_easy.dart';
 
 class DriverMainScreen extends StatefulWidget {
@@ -145,6 +146,7 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
         await DriverShiftService().recordDisconnection(driverId);
       } catch (_) {}
     }
+    OneSignalService().logout();
     await Supabase.instance.client.auth.signOut();
     if (mounted) {
       nav.pushAndRemoveUntil(

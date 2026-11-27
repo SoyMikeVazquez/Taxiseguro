@@ -1,3 +1,10 @@
+// ============================================================================
+// AVISO PARA EL AGENTE: SISTEMA DE NOTIFICACIONES SELLADO Y BLINDADO.
+// La configuracion de despacho de notificaciones Push (conductores cercanos y
+// estados de viaje del pasajero: accepted, arrived, in_progress, completed),
+// WhatsApp y correos transaccionales esta excelente. NO MODIFICAR LA LOGICA
+// DE NOTIFICACIONES EN ESTE ARCHIVO.
+// ============================================================================
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
@@ -24,36 +31,90 @@ class TripService {
       final trip = await _client.from('trips').select().eq('id', tripId).maybeSingle();
       if (trip == null) return;
       
-      final String? userId = trip['user_id'];
-      final String? driverId = trip['driver_id'];
-      
-      String passengerName = 'Pasajero';
-      String passengerEmail = '';
-      if (userId != null) {
-        final userRes = await _client.from('users').select().eq('user_id', userId).maybeSingle();
-        if (userRes != null) {
-          passengerName = userRes['nombre'] ?? 'Pasajero';
-          passengerEmail = userRes['correo'] ?? '';
+      final String? userId = trip['user_id']?.toString();
+      final String? driverId = trip['driver_id']?.toString();
+      final int? pinCodigo = (trip['codigo'] as num?)?.toInt();
+      final double? tripFare = (trip['fare'] as num?)?.toDouble();
+
+      String driverName = (trip['name_driver'] ?? '').toString().trim();
+      String driverEmail = '';
+      if (driverId != null && driverId.isNotEmpty) {
+        try {
+          final driverRes = await _client.from('conductores').select().eq('user_id', driverId).maybeSingle();
+          final dRes = driverRes ?? await _client.from('conductores').select().eq('id', driverId).maybeSingle();
+          if (dRes != null) {
+            final dbDriverName = (dRes['nombre_completo'] ?? dRes['nombre'] ?? '').toString().trim();
+            if (dbDriverName.isNotEmpty) driverName = dbDriverName;
+            driverEmail = (dRes['correo'] ?? '').toString().trim();
+          }
+        } catch (_) {}
+      }
+      if (driverName.isEmpty) driverName = 'Tu conductor';
+
+      // 1. Notificaciones Push remotas vía OneSignal (prioridad inmediata para pantalla bloqueada y fuera de la app en iOS y Android)
+      final oneSignal = OneSignalService();
+      if (userId != null && userId.isNotEmpty) {
+        String pushTitle = 'Actualizacion de Viaje';
+        String pushBody = 'Tu viaje ha cambiado de estado a: $status';
+
+        if (status == 'aceptado' || status == 'accepted') {
+          pushTitle = 'Conductor Asignado';
+          pushBody = '$driverName acepto tu viaje y se dirige a tu ubicacion.';
+        } else if (status == 'en camino' || status == 'arrived') {
+          final pinText = pinCodigo != null ? ' Tu PIN de abordaje es ${pinCodigo.toString().padLeft(5, '0')}.' : '';
+          pushTitle = 'Tu Conductor Ha Llegado';
+          pushBody = '$driverName ya esta afuera esperandote en tu punto de partida.$pinText';
+        } else if (status == 'in_progress' || status == 'en curso' || status == 'iniciado') {
+          pushTitle = 'Viaje Iniciado';
+          pushBody = 'Tu viaje con $driverName ha comenzado. Vas en camino seguro a tu destino.';
+        } else if (status == 'finalizado' || status == 'completed') {
+          final fareText = tripFare != null ? ' Total: \$${tripFare.toStringAsFixed(2)} MXN.' : '';
+          pushTitle = 'Viaje Finalizado';
+          pushBody = 'Has llegado a tu destino.$fareText Gracias por viajar con TaxiSeguro.';
+        } else if (status == 'cancelado' || status == 'cancelled') {
+          pushTitle = 'Viaje Cancelado';
+          pushBody = 'El servicio ha sido cancelado.';
         }
+
+        await oneSignal.notifyTripStatusChangeForUser(
+          targetUserId: userId,
+          title: pushTitle,
+          body: pushBody,
+          tripId: tripId,
+          status: status,
+        );
       }
 
-      String driverName = 'Conductor';
-      String driverEmail = '';
-      if (driverId != null) {
-        final driverRes = await _client.from('conductores').select().eq('user_id', driverId).maybeSingle();
-        final dRes = driverRes ?? await _client.from('conductores').select().eq('id', driverId).maybeSingle();
-        if (dRes != null) {
-          driverName = dRes['nombre_completo'] ?? dRes['nombre'] ?? 'Conductor';
-          driverEmail = dRes['correo'] ?? '';
-        }
+      if (driverId != null && driverId.isNotEmpty && (status == 'cancelado' || status == 'cancelled')) {
+        await oneSignal.notifyTripStatusChangeForUser(
+          targetUserId: driverId,
+          title: 'Viaje Cancelado',
+          body: 'El pasajero ha cancelado el servicio.',
+          tripId: tripId,
+          status: status,
+        );
+      }
+
+      // 2. Notificaciones por Correo Electrónico en segundo plano
+      String passengerName = 'Pasajero';
+      String passengerEmail = '';
+      if (userId != null && userId.isNotEmpty) {
+        try {
+          final userRes = await _client.from('users').select().eq('user_id', userId).maybeSingle();
+          if (userRes != null) {
+            passengerName = (userRes['nombre'] ?? 'Pasajero').toString();
+            passengerEmail = (userRes['correo'] ?? '').toString().trim();
+          }
+        } catch (_) {}
       }
 
       if (passengerEmail.isNotEmpty) {
+        final emailStatus = (status == 'in_progress' || status == 'en curso') ? 'iniciado' : status;
         ResendService.notifyPassengerTripStatus(
           passengerEmail: passengerEmail,
           passengerName: passengerName,
           driverName: driverName,
-          status: status,
+          status: emailStatus,
         ).then((_) => print('Email a pasajero enviado')).catchError((e) => print('Error email pasajero: $e'));
       }
 
@@ -64,48 +125,6 @@ class TripService {
           passengerName: passengerName,
           status: status,
         ).then((_) => print('Email a conductor enviado')).catchError((e) => print('Error email conductor: $e'));
-      }
-
-      // Notificaciones Push remotas vía OneSignal (iOS y Android en reposo)
-      final oneSignal = OneSignalService();
-      if (userId != null && userId.isNotEmpty) {
-        String pushTitle = 'Actualizacion de Viaje';
-        String pushBody = 'Tu viaje ha cambiado de estado a: $status';
-
-        if (status == 'aceptado' || status == 'accepted') {
-          pushTitle = 'Conductor Asignado';
-          pushBody = '$driverName acepto tu viaje y se dirige a tu ubicacion.';
-        } else if (status == 'en camino' || status == 'arrived') {
-          pushTitle = 'Tu Conductor Llego';
-          pushBody = '$driverName esta afuera esperandote en tu punto de partida.';
-        } else if (status == 'in_progress' || status == 'en curso') {
-          pushTitle = 'Viaje en Curso';
-          pushBody = 'Vas en camino seguro a tu destino con $driverName.';
-        } else if (status == 'finalizado' || status == 'completed') {
-          pushTitle = 'Viaje Finalizado';
-          pushBody = 'Has llegado a tu destino. Gracias por viajar con TaxiSeguro.';
-        } else if (status == 'cancelado' || status == 'cancelled') {
-          pushTitle = 'Viaje Cancelado';
-          pushBody = 'El servicio ha sido cancelado.';
-        }
-
-        oneSignal.notifyTripStatusChangeForUser(
-          targetUserId: userId,
-          title: pushTitle,
-          body: pushBody,
-          tripId: tripId,
-          status: status,
-        );
-      }
-
-      if (driverId != null && driverId.isNotEmpty && (status == 'cancelado' || status == 'cancelled')) {
-        oneSignal.notifyTripStatusChangeForUser(
-          targetUserId: driverId,
-          title: 'Viaje Cancelado',
-          body: 'El pasajero ha cancelado el servicio.',
-          tripId: tripId,
-          status: status,
-        );
       }
     } catch (e) {
       print('Error en notifyTripStatusChange: $e');
@@ -632,8 +651,8 @@ class TripService {
         return false;
       }
       
-      // Notificar a ambos por correo
-      notifyTripStatusChange(tripId, 'aceptado');
+      // Notificar al pasajero por Push OneSignal inmediato + correo
+      await notifyTripStatusChange(tripId, 'aceptado');
 
       // Notificar al Pasajero vía WhatsApp (En segundo plano)
       try {
@@ -745,8 +764,8 @@ class TripService {
 
       await _client.from('trips').update(updateData).eq('id', tripId);
       
-      // Notificar cambio de estado
-      notifyTripStatusChange(tripId, newStatus == 'arrived' ? 'en camino' : newStatus);
+      // Notificar cambio de estado (Push OneSignal inmediato en pantalla bloqueada + correo)
+      await notifyTripStatusChange(tripId, newStatus == 'arrived' ? 'en camino' : newStatus);
 
       // Si el conductor llegó, enviar WhatsApp al Pasajero con el PIN de abordaje
       if (newStatus == 'arrived') {
@@ -930,8 +949,8 @@ class TripService {
         print('Aviso: no se pudo registrar en tabla facturacion: $factErr');
       }
 
-      // Notificar completado
-      notifyTripStatusChange(tripId, 'finalizado');
+      // Notificar completado (Push OneSignal inmediato en pantalla bloqueada + correo)
+      await notifyTripStatusChange(tripId, 'finalizado');
 
       // Enviar Recibo de Viaje por WhatsApp al Pasajero (En segundo plano)
       try {

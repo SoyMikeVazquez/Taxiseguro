@@ -31,6 +31,7 @@ import '../services/ad_service.dart';
 import '../services/mercado_pago_service.dart';
 import '../models/saved_card.dart';
 import '../services/saved_card_service.dart';
+import '../services/onesignal_service.dart';
 import '../widgets/add_card_bottom_sheet.dart';
 
 class TaxiseguroHomeScreen extends StatefulWidget {
@@ -40,7 +41,7 @@ class TaxiseguroHomeScreen extends StatefulWidget {
   State<TaxiseguroHomeScreen> createState() => _TaxiseguroHomeScreenState();
 }
 
-class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
+class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   
   List<Ad> _ads = [];
@@ -84,12 +85,32 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _registerPassengerOneSignal();
     BackgroundServiceHelper.requestNotificationPermission();
     _checkActiveTrip();
     _fetchAds();
     _fetchUserStats();
     _loadSavedCard();
     PricingService.loadPricingConfig();
+  }
+
+  void _registerPassengerOneSignal() {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user != null && user.id.isNotEmpty) {
+      OneSignalService().login(user.id);
+      OneSignalService().setTag('role', 'pasajero');
+    }
+    OneSignalService().requestPermission();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _registerPassengerOneSignal();
+      _checkActiveTrip();
+    }
   }
 
   Future<void> _loadSavedCard() async {
@@ -247,6 +268,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                     cancelReason: 'Cancelado automáticamente por expiración de tiempo (35 min)',
                     cancelledBy: 'sistema',
                   );
+                  BackgroundServiceHelper.stopPassengerTrip();
                   return; // No mostramos nada, dejamos al usuario en el inicio
                 }
               } catch (e) {
@@ -260,13 +282,18 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             _isDriverAssigned = true;
           }
         });
+        BackgroundServiceHelper.startService();
         _listenToTrip(activeTrip.id!);
       }
+    } else {
+      // Si no hay viaje activo al iniciar o reanudar, limpiar cualquier Live Activity o notificacion persistente residual
+      BackgroundServiceHelper.stopPassengerTrip();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _geocodeDebounceTimer?.cancel();
     _tripSubscription?.cancel();
     super.dispose();
@@ -343,11 +370,12 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
             _isSearchingDriver = false;
             _isDriverAssigned = false;
             _isTripCompleted = true;
+            // Detener de inmediato la Live Activity (Dynamic Island) y la notificacion persistente en curso
             BackgroundServiceHelper.stopPassengerTrip();
             if (_lastNotifiedStatus != 'completed') {
               _lastNotifiedStatus = 'completed';
               BackgroundServiceHelper.showAlertNotification(
-                'Viaje Completado',
+                'Viaje Finalizado',
                 'Has llegado a tu destino. Gracias por viajar con TaxiSeguro.',
               );
               final pMethod = (trip.paymentMethod ?? _selectedPaymentMethod).toLowerCase();
@@ -596,6 +624,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
   Future<void> _onConfirmRide() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null || _selectedOrigin == null || _selectedDestination == null) return;
+    _registerPassengerOneSignal();
     setState(() => _isLoading = true);
 
     final double calculatedFare = PricingService.calculateDynamicPrice(
@@ -1222,6 +1251,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
                       paymentResult: _lastPaymentResult,
                       savedCard: _savedCard,
                       onDismiss: () {
+                        BackgroundServiceHelper.stopPassengerTrip();
                         setState(() {
                           _isTripCompleted = false;
                           _currentTripId = null;
@@ -1428,6 +1458,7 @@ class _TaxiseguroHomeScreenState extends State<TaxiseguroHomeScreen> {
     );
 
     if (confirm == true) {
+      OneSignalService().logout();
       await Supabase.instance.client.auth.signOut();
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(

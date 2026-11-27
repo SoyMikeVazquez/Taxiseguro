@@ -101,7 +101,9 @@ class _SplashRouterScreenState extends State<SplashRouterScreen> {
         }
       }
 
-      // Segmentar rol en OneSignal para notificaciones push en reposo
+      // Vincular usuario y segmentar rol en OneSignal para notificaciones push en reposo / pantalla bloqueada
+      OneSignalService().login(user.id);
+      OneSignalService().requestPermission();
       if (isAdmin) {
         OneSignalService().setTag('role', 'admin');
       } else if (isConductor) {

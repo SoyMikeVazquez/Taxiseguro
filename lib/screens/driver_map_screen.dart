@@ -317,6 +317,12 @@ class _DriverMapScreenState extends State<DriverMapScreen> with WidgetsBindingOb
           _activeTrip = activeTrip;
         });
 
+        // Si el conductor no tiene ningun viaje activo en curso, cerrar cualquier Live Activity
+        // o notificacion de viaje permanente que haya quedado abierta
+        if (activeTrip == null) {
+          BackgroundServiceHelper.stopDriverTrip();
+        }
+
         // Si el conductor acaba de abrir la app y tiene un viaje activo, mandarlo directo a esa pantalla
         if (isInitialLoad && activeTrip != null) {
           // Usamos un pequeño delay para asegurar que el build inicial se completó

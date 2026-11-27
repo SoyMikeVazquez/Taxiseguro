@@ -1055,6 +1055,7 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
     }
     
     if (success) {
+      await BackgroundServiceHelper.stopDriverTrip();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Viaje finalizado con éxito'), backgroundColor: Colors.green),
